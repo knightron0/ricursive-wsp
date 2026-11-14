@@ -1,84 +1,100 @@
-# Agent harness
+# ricursive-wsp: weight-space programming
 
-A small OpenAI-powered loop: **propose numeric parameters → evaluate locally →
-keep improvements → repeat**. Tasks supply the objective, initial parameters,
-and evaluator. The harness has no built-in dataset or model architecture.
+An LLM **writes the weights of a ResNet-18 directly**, as Python programs, with no
+gradient descent, no internet and only X% of the training data.
+
+| Task | Start weights | Data the program gets | Scored on |
+|---|---|---|---|
+| `scratch-cifar10` | random ResNet-18 init (10 classes) | X% of CIFAR-10 train | CIFAR-10 val / test |
+| `cifar10-to-cifar100` | ResNet-18 trained on CIFAR-10, fc reinitialized for 100 classes | X% of CIFAR-100 train | CIFAR-100 val / test |
+
+```
+start weights ─► val diagnostics ─► LLM writes build(weights, data, info)
+      ▲                                          │
+      │                 restricted subprocess: no grads, no network, only the X% subset
+      │                                          │
+      └── keep if val accuracy improves ◄── evaluate on val
+                         ...rounds...
+      freeze best.pt (sha256) ─► optionally score start vs best on test, once
+```
+
+## Setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python train_base.py     # downloads CIFAR-10, trains the CIFAR-10 source model (cifar10-to-cifar100 only)
+```
 
 ## Run
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-export OPENAI_API_KEY="your-key"
-python agent.py --task examples/target/task.json --rounds 5
+export OPENAI_API_KEY=...
+python agent.py --task scratch-cifar10 --data-fraction 0.1 --rounds 20 --evaluate-test
+python agent.py --task cifar10-to-cifar100 --data-fraction 0.1 --rounds 20 --evaluate-test
+
+# Any OpenRouter model (OpenAI-compatible Chat Completions, strict JSON schema)
+export OPENROUTER_API_KEY=...
+python agent.py --provider openrouter --model anthropic/claude-opus-5-5 \
+    --task scratch-cifar10 --data-fraction 0.1 --rounds 20 --evaluate-test
+
+# No API: preview the first prompt, or run hand-written programs
+python agent.py --task scratch-cifar10 --data-fraction 0.1 --dry-run
+python agent.py --task scratch-cifar10 --data-fraction 0.1 --programs examples/programs/random_features.py
+python agent.py --task cifar10-to-cifar100 --data-fraction 0.1 --programs examples/programs/linear_probe.py
+python -m unittest test_agent.py
 ```
 
-The included example is a tiny arithmetic task demonstrating the interface.
-Try the local setup without an API key or any installed dependencies:
+## The program the LLM writes
 
-```bash
-python3 agent.py --task examples/target/task.json --dry-run
-python3 -m unittest test_agent.py
+```python
+def build(weights, data, info):
+    # weights: current best ResNet-18 state_dict {name: tensor}
+    # data:    {"images": uint8 [N,3,32,32], "labels": [N], "classes": [...]}, the X% subset only
+    # info:    task, num_classes, data budget, current val metrics
+    ...
+    return weights   # same names and shapes, finite, running_var >= 0
 ```
 
-## Task contract
+`torch`, `math` and `toolkit` (`wsp/toolkit.py`) are available. The toolkit runs the
+network and captures any module's outputs, or the per-channel mean/var needed for
+BatchNorm; it also extracts image patches and does ZCA whitening, k-means and
+ridge regression.
 
-A task JSON supplies:
+## Rules the harness enforces
 
-```json
-{
-  "objective": "Explain what the parameters should achieve.",
-  "parameters": {"weight": 0.0, "bias": 0.0},
-  "context": "Feature definitions, constraints, or other relevant evidence.",
-  "evaluator": ["python3", "evaluate.py"]
-}
-```
+- **Data budget:** `--data-fraction X` picks a fixed, class-balanced subset of the
+  45k train split (`--data-seed`). Its indices are saved in the run directory.
+  Only that subset is handed to the program.
+- **No gradients:** grad mode is off and can't be turned back on; `torch.optim` and
+  `torch.func` gradient transforms are removed (`--allow-gradients` lifts this).
+- **No internet, no other data:** an audit hook blocks sockets, DNS, subprocesses
+  and threads. Programs can read only the Python/torch install, `wsp/` and their
+  own temp directory, and can write only there. The API key is removed from their
+  environment. The only network traffic is the harness calling the LLM.
+  This is best-effort isolation, **not a security sandbox**: generated code runs
+  as your user.
+- **Splits:** 5k of the official train set is val (the search signal); test is
+  loaded only after `best.pt` is frozen, and never shown to the model.
+- **Acceptance:** strictly higher val accuracy, ties broken by lower loss. Rounds
+  build on the current best. Failed programs (errors, timeouts, bad shapes, NaNs)
+  are fed back to the model and the run continues. API failures stop the run.
 
-The evaluator runs relative to the task file's directory. It receives the
-parameter object as JSON on stdin and must emit one JSON object on stdout:
+## Each round the LLM sees
 
-```json
-{"score": 0.42, "feedback": {"errors": "Details useful for the next proposal"}}
-```
+Task description, ResNet-18 layout and state_dict naming, toolkit docs, data
+budget, per-tensor stats, val accuracy and loss, per-class accuracy (the worst
+and best classes for CIFAR-100), top confusions, dead-channel fraction per stage,
+accepted programs so far, and the last `--history` attempts with code and results
+or tracebacks.
 
-**Higher scores are better.** Send diagnostics to stderr. Evaluators are
-user-provided programs; generated agent output is never executed as code.
-Choose a deterministic evaluation setup and keep dataset splits inside your
-own evaluator. The harness does not implement sampling or training.
+## Output: `runs/<timestamp>/`
 
-Each API request includes the objective, context, current best parameters,
-evaluator results, and the last three attempts. Its structured response is:
-
-```json
-{
-  "rationale": "Why this change might help.",
-  "edits": [{"parameter": "weight", "value": 0.5}]
-}
-```
-
-Edits set absolute values; omitted parameters stay unchanged. Only known
-parameters and finite numeric values are accepted. Improvements are selected
-by score. This is adaptive model selection, not an unbiased validation score.
-
-## Options and artifacts
-
-- `--model`: defaults to `OPENAI_MODEL`, then `gpt-6-astra`.
-- `--rounds`: 5 API requests by default, with no automatic retries.
-- `--max-output-tokens`: 6,000 per request by default; not a dollar budget.
-- `--eval-timeout`: evaluator timeout in seconds, default 60.
-- `--output`: new output directory; defaults to `runs/<timestamp>`.
-- `--dry-run`: evaluate baseline and save the prompt/schema, without API calls.
-- `--evaluate-final`: run the task's optional `final_evaluator` command once,
-  after freezing the winner. Its results are never fed back to the agent.
-
-Run directories contain the task/config, proposal inputs, per-round results,
-API token usage, `best_parameters.json`, `best_metrics.json`, and a frozen
-parameter hash. The task file is never overwritten. API or evaluator failures
-stop the run, leaving the saved best parameters intact. Invalid proposals are
-rejected and fed back. Existing output directories are refused.
-
-The API key is read from the environment, never included in prompts or logs,
-and removed from the evaluator's environment. `.env` files are not loaded
-automatically. API calls use the official Responses API with structured JSON
-output. Live API access requires your own key; tests use mocked responses.
+| File | Contents |
+|---|---|
+| `best.pt`, `best_metrics.json` | Best weights and their val diagnostics |
+| `baseline_val.json` | Val diagnostics of the start weights |
+| `lineage.json` | Accepted programs in order (replay from start to reproduce `best.pt`) |
+| `round_NNN/` | `input.json` (exact prompt), `program.py`, `result.json` (outcome, tokens) |
+| `subset_indices.json`, `data_subset.pt` | The exact training data the programs got |
+| `frozen.json`, `final_test.json` | Hash of `best.pt`; start vs best test accuracy |
