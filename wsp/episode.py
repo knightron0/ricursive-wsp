@@ -1,18 +1,19 @@
-"""The calls an agent can make, the reasoned-mode lock, and the audit.
+"""The calls an agent can make, the reasoned-mode phases, and the audit.
 
     data(indices)     training images as hex text (never labels)
     labels(indices)   class labels
     tools(code)       Python in the sandbox
+    end_tools()       reasoned only: leave phase 1 for good
     evaluate(weights) training-subset accuracy of a diff (aggregate numbers only)
     submit(weights)   final diff; ends the episode if valid
 
 reasoned mode splits the training subset into a pool (indices 0..pool-1) and a labeled set
-(pool..N-1), and enforces:
-  1. labels() and evaluate() both depend on labels: once either has executed (the lock), tools()
-     never executes again;
-  2. the sandbox holds only pool images; pool labels are never returned by any call;
-  3. labels() covers only the labeled set, and its images (data()) are visible only after the lock;
-  4. evaluate() scores on the labeled set.
+(pool..N-1), and runs in two phases:
+  1. phase 1: tools() and data() on the pool; labels(), evaluate() and submit() are refused;
+  2. end_tools() switches to phase 2 for good: tools() never executes again, and labels(),
+     evaluate(), submit() and data() on the labeled set become available;
+  3. the sandbox holds only pool images; pool labels are never returned by any call;
+  4. labels() covers only the labeled set, and evaluate() scores on it.
 So nothing derived from a label ever reaches code, and no number computed by code describes an
 image whose label the agent sees.
 """
@@ -29,9 +30,9 @@ from wsp.evaluation import evaluate
 ROOT = Path(__file__).resolve().parent.parent
 MODES = ('blind', 'reasoned', 'full')
 ALLOWED = {'blind': {'tools', 'submit'},
-           'reasoned': {'data', 'labels', 'tools', 'evaluate', 'submit'},
+           'reasoned': {'data', 'labels', 'tools', 'end_tools', 'evaluate', 'submit'},
            'full': {'data', 'labels', 'tools', 'evaluate', 'submit'}}
-LABEL_CALLS = {'labels', 'evaluate'}  # reasoned: the first one executed locks tools()
+PHASE2_CALLS = {'labels', 'evaluate', 'submit'}
 MAX_IMAGES_PER_CALL = 16
 MAX_OUTPUT_CHARS = 10000
 
@@ -62,12 +63,14 @@ class Episode:
         if name not in ALLOWED[self.mode]:
             text, error = f'{name}() is not available in {self.mode} mode', True
         elif name == 'tools' and self.locked:
-            text, error = 'tools() is permanently disabled: labels() or evaluate() has been called', True
+            text, error = 'tools() is permanently disabled: end_tools() has been called', True
+        elif self.mode == 'reasoned' and not self.locked and name in PHASE2_CALLS:
+            text, error = (f'{name}() is available only in phase 2. Call end_tools() to enter it; that '
+                           'permanently disables tools()'), True
         else:
             try:
                 text, error = getattr(self, f'_{name}')(args), False
                 entry['executed'] = True
-                self.locked |= self.mode == 'reasoned' and name in LABEL_CALLS
             except (ValueError, KeyError, TypeError) as e:
                 text, error = f'{name}() failed: {e}', True
         entry.update(error=error, args=_summary(args), result=text[:2000])
@@ -85,8 +88,15 @@ class Episode:
         if len(idx) > MAX_IMAGES_PER_CALL:
             raise ValueError(f'at most {MAX_IMAGES_PER_CALL} images per call')
         if self.pool and not self.locked and any(i >= self.pool for i in idx):
-            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only after labels() or evaluate()')
+            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only in phase 2, after end_tools()')
         return '\n\n'.join(f'image {i}:\n{pixels_text(self.images[i])}' for i in idx)
+
+    def _end_tools(self, args):
+        if self.locked:
+            raise ValueError('already in phase 2')
+        self.locked = True
+        return ('Phase 2 has started. tools() is permanently disabled. Available now: labels() and evaluate() on the '
+                f'labeled set (indices {self.pool}..{len(self.labels) - 1}), data() on any index, and submit().')
 
     def _labels(self, args):
         idx = self._indices(args)
@@ -135,12 +145,14 @@ def audit(mode, log, transcript_blocks=(), pool=0):
         if mode == 'reasoned' and e['executed'] and e['call'] == 'labels' and any(j < pool for j in idx):
             problems.append(f'call {i}: labels returned for pool images')
         if mode == 'reasoned' and e['executed'] and e['call'] == 'data' and not locked and any(j >= pool for j in idx):
-            problems.append(f'call {i}: labeled-set images shown before the lock')
+            problems.append(f'call {i}: labeled-set images shown before end_tools')
         if e['executed'] and e['call'] not in ALLOWED[mode]:
             problems.append(f'call {i}: {e["call"]} executed in {mode} mode')
+        if mode == 'reasoned' and e['executed'] and e['call'] in PHASE2_CALLS and not locked:
+            problems.append(f'call {i}: {e["call"]} executed before end_tools')
         if mode == 'reasoned' and e['executed'] and e['call'] == 'tools' and locked:
-            problems.append(f'call {i}: tools executed after labels/evaluate')
-        locked |= e['executed'] and e['call'] in LABEL_CALLS
+            problems.append(f'call {i}: tools executed after end_tools')
+        locked |= e['executed'] and e['call'] == 'end_tools'
     for t in transcript_blocks:
         if t in ('image', 'document'):
             problems.append(f'transcript contains a {t} block')

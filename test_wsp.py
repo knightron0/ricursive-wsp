@@ -44,67 +44,91 @@ BIAS = {'weights': [{'name': 'fc.bias', 'values': [0.0] * 10}]}
 
 
 class LockTests(unittest.TestCase):
-    """reasoned: once labels() or evaluate() has executed, tools() never executes again."""
+    """reasoned: labels(), evaluate() and submit() only after end_tools(); after it, tools() never executes again."""
 
-    def test_tools_refused_after_labels_and_code_never_runs(self):
+    def test_tools_refused_after_end_tools_and_code_never_runs(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
             text, err = ep.call('tools', {'code': "open('before.txt', 'w').write('x'); print('ran')"})
             self.assertFalse(err)
             self.assertIn('ran', text)
-            self.assertFalse(ep.call('labels', {'indices': [10, 11]})[1])
+            self.assertIn('Phase 2', ep.call('end_tools', {})[0])
             text, err = ep.call('tools', {'code': "open('after.txt', 'w').write('x')"})
             self.assertTrue(err)
             self.assertIn('permanently disabled', text)
             self.assertTrue((ep.workspace / 'before.txt').exists())
             self.assertFalse((ep.workspace / 'after.txt').exists())
-            # data, labels and evaluate still work in phase 2
-            for name, args in (('data', {'indices': [0, 15]}), ('labels', {'indices': [12]}), ('evaluate', BIAS)):
+            for name, args in (('data', {'indices': [0, 15]}), ('labels', {'indices': [12]}), ('evaluate', BIAS),
+                               ('submit', BIAS)):
                 self.assertFalse(ep.call(name, args)[1], name)
-            self.assertEqual([e['phase'] for e in ep.log], [1, 1, 2, 2, 2, 2])
+            self.assertEqual([e['phase'] for e in ep.log], [1, 1, 2, 2, 2, 2, 2])
+            self.assertIsNotNone(ep.submission)
             self.assertEqual(audit('reasoned', ep.log, pool=10), [])
 
-    def test_evaluate_locks_tools(self):
+    def test_labels_evaluate_submit_refused_in_phase_1(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
-            self.assertTrue(ep.call('evaluate', {'weights': [{'name': 'fc.bias', 'values': [0.0]}]})[1])
-            self.assertFalse(ep.locked)  # a rejected diff scores nothing: no lock
-            self.assertFalse(ep.call('evaluate', BIAS)[1])
-            self.assertIn('permanently disabled', ep.call('tools', {'code': 'print(1)'})[0])
-            self.assertFalse(ep.call('data', {'indices': [10]})[1])  # labeled images visible after the lock
+            for name, args in (('labels', {'indices': [10]}), ('evaluate', BIAS), ('submit', BIAS)):
+                text, err = ep.call(name, args)
+                self.assertTrue(err, name)
+                self.assertIn('only in phase 2', text)
+            self.assertFalse(ep.locked)
+            self.assertIsNone(ep.submission)
+            self.assertFalse(any(e['executed'] for e in ep.log))
+            self.assertFalse(ep.call('tools', {'code': 'print(1)'})[1])
             self.assertEqual(audit('reasoned', ep.log, pool=10), [])
-            self.assertIn('after labels/evaluate', audit('reasoned', [{'call': 'evaluate', 'executed': True},
-                                                                       {'call': 'tools', 'executed': True}])[0])
-        with tempfile.TemporaryDirectory() as tmp, NO_GPU:  # full mode: no lock
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('full', tmp)
             self.assertFalse(ep.call('evaluate', BIAS)[1])
             self.assertFalse(ep.call('tools', {'code': 'print(1)'})[1])
+            self.assertIn('not available', ep.call('end_tools', {})[0])
 
-    def test_failed_labels_call_does_not_lock(self):
+    def test_end_tools_is_one_way(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
-            self.assertTrue(ep.call('labels', {'indices': [999]})[1])
-            self.assertFalse(ep.call('tools', {'code': 'print(1)'})[1])
+            self.assertFalse(ep.call('end_tools', {})[1])
+            text, err = ep.call('end_tools', {})
+            self.assertTrue(err)
+            self.assertIn('already in phase 2', text)
+            self.assertTrue(ep.locked)
+            self.assertTrue(ep.call('tools', {'code': 'print(1)'})[1])
 
     def test_same_turn_order_respected(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
             agent = ScriptedAgent([[{'name': 'tools', 'args': {'code': 'print(1)'}},
-                                    {'name': 'labels', 'args': {'indices': [10]}},
+                                    {'name': 'end_tools', 'args': {}},
                                     {'name': 'tools', 'args': {'code': 'print(2)'}}],
-                                   [{'name': 'submit', 'args': BIAS}]])
+                                   [{'name': 'labels', 'args': {'indices': [10]}},
+                                    {'name': 'submit', 'args': BIAS}]])
             run_episode(agent, ep)
             self.assertEqual([(e['call'], e['executed']) for e in ep.log],
-                             [('tools', True), ('labels', True), ('tools', False), ('submit', True)])
+                             [('tools', True), ('end_tools', True), ('tools', False), ('labels', True),
+                              ('submit', True)])
+            self.assertIsNotNone(ep.submission)
+
+    def test_nudge_names_end_tools_in_phase_1(self):
+        class Recorder(ScriptedAgent):
+            def next(self, results):
+                self.seen = getattr(self, 'seen', []) + [results]
+                return super().next(results)
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            agent = Recorder([[], [{'name': 'end_tools', 'args': {}}], [], [{'name': 'submit', 'args': BIAS}]])
+            run_episode(agent, ep)
+            nudges = [r for r in agent.seen if isinstance(r, str)]
+            self.assertEqual(nudges, ['Call end_tools(), then submit() with your diff to finish.',
+                                      'Call submit() with your diff to finish.'])
             self.assertIsNotNone(ep.submission)
 
     def test_pool_and_labeled_set_rules(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
-            self.assertIn('have no labels', ep.call('labels', {'indices': [3]})[0])
-            self.assertIn('only after labels()', ep.call('data', {'indices': [10]})[0])
+            self.assertIn('only in phase 2', ep.call('data', {'indices': [10]})[0])
             self.assertFalse(ep.call('data', {'indices': [9]})[1])
-            self.assertFalse(ep.locked)  # refused calls don't lock
+            self.assertFalse(ep.locked)
+            self.assertFalse(ep.call('end_tools', {})[1])
+            self.assertIn('have no labels', ep.call('labels', {'indices': [3]})[0])
             self.assertFalse(ep.call('labels', {'indices': [19]})[1])
             self.assertIn('"accuracy"', ep.call('evaluate', BIAS)[0])
             self.assertFalse(ep.call('data', {'indices': [10]})[1])
@@ -112,15 +136,22 @@ class LockTests(unittest.TestCase):
 
     def test_evaluate_scores_labeled_set_only(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
-            m = json.loads(episode('reasoned', tmp).call('evaluate', BIAS)[0])
+            ep = episode('reasoned', tmp)
+            ep.call('end_tools', {})
+            m = json.loads(ep.call('evaluate', BIAS)[0])
             self.assertEqual(sum(m['prediction_counts'].values()), 10)
 
-    def test_audit_catches_broken_lock_and_images(self):
-        log = [{'call': 'labels', 'executed': True}, {'call': 'tools', 'executed': True}]
-        self.assertIn('tools executed after labels/evaluate', audit('reasoned', log)[0])
-        self.assertIn('pool images', audit('reasoned', [{'call': 'labels', 'executed': True, 'args': {'indices': [1]}}], pool=5)[0])
-        self.assertIn('before the lock', audit('reasoned', [{'call': 'data', 'executed': True, 'args': {'indices': [7]}}], pool=5)[0])
-        self.assertEqual(audit('full', log), [])
+    def test_audit_catches_broken_phases_and_images(self):
+        log = [{'call': 'end_tools', 'executed': True}, {'call': 'tools', 'executed': True}]
+        self.assertIn('tools executed after end_tools', audit('reasoned', log)[0])
+        for call in ('labels', 'evaluate', 'submit'):
+            self.assertIn(f'{call} executed before end_tools', audit('reasoned', [{'call': call, 'executed': True}])[0])
+        self.assertIn('pool images', audit('reasoned', [{'call': 'end_tools', 'executed': True},
+                                                        {'call': 'labels', 'executed': True, 'args': {'indices': [1]}}],
+                                           pool=5)[0])
+        self.assertIn('before end_tools', audit('reasoned', [{'call': 'data', 'executed': True, 'args': {'indices': [7]}}], pool=5)[0])
+        self.assertIn('end_tools executed in full', audit('full', log)[0])
+        self.assertEqual(audit('full', [{'call': 'labels', 'executed': True}, {'call': 'tools', 'executed': True}]), [])
         self.assertIn('image', audit('full', [], ['text', 'image'])[0])
         self.assertIn('blind', audit('blind', [{'call': 'data', 'executed': True}])[0])
 
@@ -175,7 +206,7 @@ class DataIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('blind', tmp)
             self.assertIn('None', ep.call('tools', {'code': 'print(data)'})[0])
-            for name in ('data', 'labels', 'evaluate'):
+            for name in ('data', 'labels', 'evaluate', 'end_tools'):
                 self.assertTrue(ep.call(name, {'indices': [0]})[1], name)
 
     def test_data_is_hex_pixels_only(self):
@@ -220,7 +251,9 @@ class DiffTests(unittest.TestCase):
     def test_tool_specs_per_mode(self):
         names = writable_names(initial_weights(10))
         self.assertEqual([t['name'] for t in tool_specs('blind', names)], ['tools', 'submit'])
-        self.assertEqual(len(tool_specs('reasoned', names)), 5)
+        self.assertEqual([t['name'] for t in tool_specs('reasoned', names)],
+                         ['data', 'labels', 'tools', 'end_tools', 'evaluate', 'submit'])
+        self.assertEqual(len(tool_specs('full', names)), 5)
 
     def test_transfer_start(self):
         source = initial_weights(10, seed=1)
@@ -235,8 +268,10 @@ class EndToEndTests(unittest.TestCase):
             fake_data_dir(tmp)
             script = Path(tmp) / 'calls.json'
             script.write_text(json.dumps([[{'name': 'tools', 'args': {'code': 'print(1)'}}],
-                                          [{'name': 'labels', 'args': {'indices': [59]}}],
+                                          [{'name': 'submit', 'args': BIAS}],
+                                          [{'name': 'end_tools', 'args': {}}],
                                           [{'name': 'tools', 'args': {'code': 'print(2)'}}],
+                                          [{'name': 'labels', 'args': {'indices': [59]}}],
                                           [{'name': 'submit', 'args': BIAS}]]))
             out = Path(tmp) / 'run'
             main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--script', str(script),
@@ -244,7 +279,8 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(json.loads((out / 'audit.json').read_text()), {'clean': True, 'problems': []})
             calls = json.loads((out / 'calls.json').read_text())
             self.assertEqual([(c['call'], c['executed']) for c in calls],
-                             [('tools', True), ('labels', True), ('tools', False), ('submit', True)])
+                             [('tools', True), ('submit', False), ('end_tools', True), ('tools', False),
+                              ('labels', True), ('submit', True)])
             split = json.loads((out / 'subset_indices.json').read_text())
             labels = datasets.load_split('cifar10', 'train', tmp)[1][split['indices']]
             pool, labeled = labels[:split['pool']], labels[split['pool']:]

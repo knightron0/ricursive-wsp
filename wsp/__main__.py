@@ -6,8 +6,8 @@
     python -m wsp ... --dry-run                      # write prompt + tool definitions, no API call
     python -m wsp ... --script calls.json            # replay scripted calls, no API call
 
-Modes (see wsp/episode.py): blind = tools() only, no data; reasoned = data/labels/tools/evaluate,
-but the first labels() permanently disables tools(); full = everything. Val (and test, with
+Modes (see wsp/episode.py): blind = tools() only, no data; reasoned = phase 1 tools/data(pool),
+then end_tools() permanently disables tools() and opens labels/evaluate/submit; full = everything. Val (and test, with
 --evaluate-test) are scored once on the submitted diff and never shown to the agent.
 """
 import argparse

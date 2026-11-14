@@ -17,14 +17,15 @@ Write each tensor's values flat in row-major (C) order of its shape, e.g. a conv
 MODE_RULES = {
     'blind': 'Mode blind: you have no data. Available: tools(), submit(). Everything must come from your own '
              'knowledge. In tools() code, `data` is None. No gradients in any mode.',
-    'reasoned': 'Mode reasoned: available: data(), labels(), tools(), evaluate(), submit(). The training subset '
-                'has two disjoint parts. The POOL: unlabeled images; the sandbox behind tools() holds them '
-                '(`data` = {"images", "classes"}) and data() shows them; their labels are never available. The '
-                'LABELED SET: labels() gives their labels, and evaluate() scores a diff on them. Both depend on '
-                'labels, so IMPORTANT: your first labels() or evaluate() call permanently disables tools() for the '
-                'rest of the episode; after that you may call labels(), evaluate() and data() as often as you like, '
-                'and data() also shows labeled-set images. Do all the code work you need first, then stop using '
-                'tools(). No gradients in any mode.',
+    'reasoned': 'Mode reasoned: the training subset has two disjoint parts. The POOL: unlabeled images; the sandbox '
+                'behind tools() holds them (`data` = {"images", "classes"}) and data() shows them; their labels are '
+                'never available. The LABELED SET: labels() gives their labels, evaluate() scores a diff on them, '
+                'and data() shows them in phase 2. The episode has two phases. PHASE 1: tools() and data() on the '
+                'pool; labels(), evaluate() and submit() are not available. PHASE 2 starts when you call end_tools(). '
+                'IMPORTANT: end_tools() is one-way: tools() is then permanently disabled for the rest of the '
+                'episode, and labels(), evaluate() and data() (pool and labeled set) are available as often as you '
+                'like, and submit() ends the episode. Do all the code work you need in phase 1, then call '
+                'end_tools(). No gradients in any mode.',
     'full': 'Mode full: available: data(), labels(), tools(), evaluate(), submit(). In tools() code, `data` = '
             '{"images", "labels", "classes"}. No gradients in any mode (autograd and torch.optim are disabled).',
 }
@@ -32,13 +33,16 @@ MODE_RULES = {
 CALL_DOCS = {
     'data': 'Training images by index, as text: per image 96 lines (R rows 0-31, then G, then B), each line 64 hex '
             'digits = 32 uint8 pixels. At most 16 images per call. Never includes labels.',
-    'labels': 'Class labels of training images by index.',
+    'labels': 'Class labels of training images by index (reasoned mode: labeled set only, phase 2 only).',
+    'end_tools': 'End phase 1 for good: tools() is permanently disabled, and labels(), evaluate(), submit() and '
+                 'data() on the labeled set become available. Takes no arguments.',
     'tools': 'Run Python in a sandbox (fresh process; files in the working directory persist across calls). '
              'Preloaded: torch, math, toolkit, `data`, `start` (start state_dict). No network, no subprocesses, '
              'no files outside the working directory. Returns the end of stdout/stderr.\n' + TOOLKIT_DOC,
     'evaluate': 'Accuracy, loss, per-class accuracy and confusion of a candidate diff on the training subset '
-                '(the labeled set in reasoned mode).',
-    'submit': 'Submit the final diff. Ends the episode if it is valid; otherwise you are told why.',
+                '(reasoned mode: the labeled set, phase 2 only).',
+    'submit': 'Submit the final diff (reasoned mode: phase 2 only). Ends the episode if it is valid; otherwise you '
+              'are told why.',
 }
 
 
@@ -51,10 +55,11 @@ def tool_specs(mode, names):
                'properties': {'indices': {'type': 'array', 'items': {'type': 'integer'}}}}
     schemas = {'data': indices, 'labels': indices, 'evaluate': diff, 'submit': diff,
                'tools': {'type': 'object', 'required': ['code'], 'additionalProperties': False,
-                         'properties': {'code': {'type': 'string'}}}}
+                         'properties': {'code': {'type': 'string'}}},
+               'end_tools': {'type': 'object', 'required': [], 'additionalProperties': False, 'properties': {}}}
     from wsp.episode import ALLOWED
     return [{'name': n, 'description': CALL_DOCS[n], 'input_schema': schemas[n], 'eager_input_streaming': True}
-            for n in ('data', 'labels', 'tools', 'evaluate', 'submit') if n in ALLOWED[mode]]
+            for n in ('data', 'labels', 'tools', 'end_tools', 'evaluate', 'submit') if n in ALLOWED[mode]]
 
 
 def user_prompt(task, mode, start, n_examples, max_numbers, pool=0):

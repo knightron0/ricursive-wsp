@@ -12,6 +12,7 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 | `data(indices)` | training images as hex pixel text (96 rows of 64 hex digits each; ≤16 per call), never labels | harness |
 | `labels(indices)` | class labels | harness |
 | `tools(code)` | stdout/stderr of Python run in the sandbox | sandbox |
+| `end_tools()` | `reasoned` only: ends phase 1 for good | harness |
 | `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only) | harness |
 | `submit(weights)` | validation result; a valid diff ends the episode | harness |
 
@@ -20,25 +21,26 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 | Mode | Calls | What sandbox code can read |
 |---|---|---|
 | `blind` | `tools`, `submit` | no data |
-| `reasoned` | all five, but **the first `labels()` or `evaluate()` permanently disables `tools()`** | pool images only |
-| `full` | all five | training images and labels |
+| `reasoned` | phase 1: `tools`, `data` (pool); **`end_tools()` permanently disables `tools()`**; phase 2: `labels`, `evaluate`, `data`, `submit` | pool images only |
+| `full` | `data`, `labels`, `tools`, `evaluate`, `submit` | training images and labels |
 
 No gradients in any mode: autograd, `torch.optim` and `torch.func` transforms are disabled in the sandbox.
 
 `reasoned` splits the training subset into two disjoint, class-balanced parts (`--labeled-share`, default 0.5):
 - **pool** (indices `0..P-1`): unlabeled images. The sandbox holds these, and `data()` shows them. Their labels are never returned by any call.
-- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them. Their pixels (`data()`) become visible only after the lock.
+- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them. Their pixels (`data()`) become visible only in phase 2.
 
-`labels()` and `evaluate()` both carry label information, so whichever executes first is the lock: `tools()` is
-gone for good, while `labels()`, `evaluate()` and `data()` stay available. So nothing derived from a label ever
+The episode runs in two phases. Phase 1 has `tools()` and `data()` on the pool; `labels()`, `evaluate()` and
+`submit()` are refused. The agent calls `end_tools()` to enter phase 2, which is one-way: `tools()` is gone for
+good, and `labels()`, `evaluate()`, `data()` and `submit()` become available. So nothing derived from a label ever
 reaches code: every number code computes describes a pool image, and every label, labeled image and score is
 seen only in context. This closes two exploits seen in earlier runs: precomputing a fit in code and finishing it
 once the labels arrive, and probing `evaluate()` with crafted diffs, pasting the confusion matrices into
 `tools()` and solving for class statistics.
 
 What's checked mechanically, by the harness and by `audit.json` after each run:
-1. In `reasoned`, no `tools()` call executes after the first executed `labels()` or `evaluate()`.
-2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image is shown before the lock.
+1. In `reasoned`, no `tools()` call executes after `end_tools()`, and no `labels()`, `evaluate()` or `submit()` executes before it.
+2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image is shown before `end_tools()`.
 3. No call outside the mode's list ever executes.
 4. The sandbox's `data.pt` holds labels only in `full` (in `reasoned`, pool images only).
 5. The transcript holds no `image` or `document` blocks.
@@ -75,7 +77,7 @@ disabled. The isolation uses Python audit hooks: it's process isolation, **not a
 | Path | Role |
 |---|---|
 | `wsp/__main__.py` | CLI: subset, prompt, episode, audit, val/test scoring |
-| `wsp/episode.py` | the five calls, the mode rules, the `reasoned` lock, the audit |
+| `wsp/episode.py` | the calls, the mode rules, the `reasoned` phases, the audit |
 | `wsp/agent.py` | Anthropic agent (streaming, adaptive thinking, prompt caching, server-side refusal fallback), scripted agent, episode loop |
 | `wsp/prompt.py` | system and user prompt, per-mode rules, tool definitions |
 | `wsp/sandbox.py` | runs one `tools()` call |
