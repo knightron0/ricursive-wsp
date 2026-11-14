@@ -1,0 +1,6 @@
+{
+  "objective": "Choose slope and bias so slope*x + bias matches 2*x + 1.",
+  "parameters": {"slope": 0, "bias": 0},
+  "context": "The evaluator reports negative mean squared error. Higher is better; the best possible score is zero.",
+  "evaluator": ["python3", "evaluate.py"]
+}
