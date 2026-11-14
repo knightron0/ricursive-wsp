@@ -92,7 +92,9 @@ def main(workdir, data_path, *flags):
     info = json.loads((workdir / 'info.json').read_text())
     source = (workdir / 'program.py').read_text()
     from wsp import toolkit  # import before restrictions so torch internals load normally
-    toolkit.capture(weights, data['images'][:2], ['fc'], info['num_classes'])  # warm up device
+    sys.modules['toolkit'] = toolkit  # programs may write `import toolkit`
+    toolkit.capture(weights, torch.zeros(2, 3, 32, 32, dtype=torch.uint8), ['fc'],
+                    info['num_classes'])  # warm up device (works even with no data)
     if '--allow-gradients' not in flags:
         block_gradients()
     restrict_io(str(workdir), data_path)

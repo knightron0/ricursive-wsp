@@ -33,6 +33,37 @@ TASKS = {
 }
 
 
+DATASET_DESCRIPTIONS = {
+    'cifar10': {
+        'name': 'CIFAR-10 (Krizhevsky, 2009)',
+        'images': '32x32 RGB natural photos (uint8), downsampled from the 80 Million Tiny Images '
+                  'collection; one object per image, usually roughly centered and filling much of '
+                  'the frame, with varied pose, scale, viewpoint and background.',
+        'channel_mean': (0.4914, 0.4822, 0.4465), 'channel_std': (0.2470, 0.2435, 0.2616),
+        'splits': '50,000 official train images (5,000 per class; here 45,000 train + 5,000 val) '
+                  'and 10,000 test images (1,000 per class). Classes are balanced and mutually exclusive.',
+        'classes': {
+            'airplane': 'aircraft of all kinds, often against sky (blue/gray/white backgrounds)',
+            'automobile': 'sedans, SUVs and similar cars (not pickup trucks)',
+            'bird': 'many species, perched or flying; often against foliage or sky',
+            'cat': 'domestic cats, often indoors or close-up',
+            'deer': 'deer and similar animals, often in green/brown natural scenes',
+            'dog': 'domestic dogs of many breeds; most often confused with cat',
+            'frog': 'frogs and toads, often green/brown on ground or leaves',
+            'horse': 'horses, often side-on in fields',
+            'ship': 'boats and ships, often on water (blue backgrounds)',
+            'truck': 'big trucks only (not pickup trucks); most often confused with automobile',
+        },
+    },
+    'cifar100': {
+        'name': 'CIFAR-100 (Krizhevsky, 2009)',
+        'images': '32x32 RGB natural photos (uint8), same style and source as CIFAR-10.',
+        'splits': '50,000 official train images (500 per class; here 45,000 train + 5,000 val) '
+                  'and 10,000 test images (100 per class). 100 fine classes in 20 superclasses.',
+    },
+}
+
+
 def start_weights(task, source=None, seed=0):
     weights = initial_weights(task.num_classes, seed)
     if task.needs_source:

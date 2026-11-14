@@ -58,6 +58,7 @@ class RestrictionTests(unittest.TestCase):
 
     def test_valid_program_uses_data_and_toolkit(self):
         result = self.runner(program(
+            "import toolkit\nimport torch.nn.functional as F\n"
             "f = toolkit.capture(weights, data['images'], ['avgpool'], 10, reduce='pool')['avgpool']\n"
             "weights['fc.weight'], weights['fc.bias'] = toolkit.ridge(f, data['labels'], 10)\n"
             "return weights"))
@@ -179,6 +180,91 @@ class SearchTests(unittest.TestCase):
             self.assertEqual([e['round'] for e in json.loads((out / 'lineage.json').read_text())], [1])
             self.assertIn('boom', seen[3]['previous_attempts'][-1]['error'])
 
+    def test_parallel_candidates_keep_best_of_round(self):
+        programs = iter(['p1', 'p2', 'p3', 'q1', 'q2', 'q3'])
+        score = {'p1': 0.4, 'p2': 0.6, 'p3': 0.5, 'q1': 0.55, 'q2': 0.58, 'q3': 0.2}
+        lock = __import__('threading').Lock()
+
+        def propose(payload):
+            with lock:
+                prog = next(programs)
+            if prog == 'q3':
+                raise RuntimeError('rate limited')
+            return {'rationale': prog, 'program': prog}, {}
+
+        def apply_fn(weights, prog, info):
+            return {'w': torch.tensor([score[prog]])}
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            best, metrics = agent.search({'w': torch.tensor([0.1])},
+                                         lambda w: {'accuracy': w['w'].item(), 'loss': 1.0},
+                                         propose, apply_fn, 2, out, {'task': 't'}, candidates=3, stagger=0)
+            self.assertAlmostEqual(metrics['accuracy'], 0.6, places=5)
+            lineage = json.loads((out / 'lineage.json').read_text())
+            self.assertEqual(len(lineage), 1)
+            self.assertEqual(lineage[0]['round'], 1)
+            self.assertEqual(len(list((out / 'round_001').glob('cand_*/program.py'))), 3)
+
+    def test_retries_transient_errors_only(self):
+        class Limited(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={'retry-after': '3'})
+
+        class BadRequest(Exception):
+            status_code = 400
+
+        attempts, sleeps = [], []
+        def flaky(payload):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise Limited('rate limited')
+            return {'rationale': 'r', 'program': 'p'}, {}
+        self.assertEqual(agent.with_retries(flaky, 5, base_delay=5, sleep=sleeps.append)({})[0]['program'], 'p')
+        self.assertEqual(len(sleeps), 2)
+        self.assertGreaterEqual(sleeps[0], 3.75)
+        self.assertGreater(sleeps[1], sleeps[0] * 1.1)
+
+        def always_limited(payload):
+            raise Limited('rate limited')
+        with self.assertRaises(Limited):
+            agent.with_retries(always_limited, 2, sleep=sleeps.append)({})
+
+        calls = []
+        def bad(payload):
+            calls.append(1)
+            raise BadRequest('bad model id')
+        with self.assertRaises(BadRequest):
+            agent.with_retries(bad, 5, sleep=sleeps.append)({})
+        self.assertEqual(len(calls), 1)
+
+    def test_clean_program(self):
+        good = 'def build(weights, data, info):\n    return {"a": 1}\n'
+        self.assertEqual(agent.clean_program(good), (good, False))
+        fixed, repaired = agent.clean_program(good + '}"')
+        self.assertTrue(repaired)
+        self.assertEqual(fixed, good)
+        fixed, repaired = agent.clean_program('```python\n' + good + '```')
+        self.assertTrue(repaired)
+        compile(fixed, 'p', 'exec')
+        broken = 'def build(:\n}"'
+        self.assertEqual(agent.clean_program(broken), (broken, False))
+
+    def test_api_failure_stops_cleanly_and_keeps_best(self):
+        calls = []
+        def propose(payload):
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError('503 provider unavailable')
+            return {'rationale': 'r', 'program': 'p'}, {}
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            best, metrics = agent.search({'w': torch.zeros(1)}, lambda w: {'accuracy': w['w'].item(), 'loss': 1.0},
+                                         propose, lambda w, p, i: {'w': torch.ones(1)}, 5, out, {'task': 't'})
+            self.assertEqual(metrics['accuracy'], 1.0)
+            self.assertEqual(json.loads((out / 'stopped_early.json').read_text())['round'], 2)
+            self.assertEqual(len(calls), 2)
+
     def test_api_contract(self):
         calls = []
         response = SimpleNamespace(status='completed', id='mock', usage=None,
@@ -208,19 +294,67 @@ class OpenRouterTests(unittest.TestCase):
             return client
         with patch.dict('sys.modules', {'openai': SimpleNamespace(OpenAI=make_client)}), \
              patch.dict('os.environ', {'OPENROUTER_API_KEY': 'or-key'}):
-            propose = agent.openrouter_proposer('x/y', 1000)
-            self.assertEqual(propose({})[0]['program'], 'p')
+            propose = agent.openrouter_proposer('x/y', 1000, response_format='json')
+            self.assertEqual(propose({})[0]['program'], 'p\n')
             self.assertEqual(captured['base_url'], agent.OPENROUTER_URL)
             self.assertEqual(captured['api_key'], 'or-key')
             self.assertTrue(calls[0]['response_format']['json_schema']['strict'])
             self.assertEqual(calls[0]['messages'][0]['content'], agent.INSTRUCTIONS)
+        with patch.dict('sys.modules', {'openai': SimpleNamespace(OpenAI=make_client)}), \
+             patch.dict('os.environ', {'FIREWORKS_API_KEY': 'fw-key'}):
+            agent.openrouter_proposer('accounts/x/models/y', 1000, provider='fireworks')
+            self.assertEqual(captured['base_url'], agent.FIREWORKS_URL)
+            self.assertEqual(captured['api_key'], 'fw-key')
+        with patch.dict('sys.modules', {'openai': SimpleNamespace(OpenAI=make_client)}), \
+             patch.dict('os.environ', {'OPENROUTER_API_KEY': 'or-key'}):
+            propose = agent.openrouter_proposer('x/y', 1000, response_format='json')
             response.choices[0].finish_reason = 'length'
             with self.assertRaisesRegex(RuntimeError, 'incomplete'):
                 propose({})
             response.choices[0].finish_reason = 'stop'
             message.content = 'no json here'
-            with self.assertRaisesRegex(RuntimeError, 'did not return JSON'):
+            with self.assertRaisesRegex(RuntimeError, 'no program'):
                 propose({})
+
+
+class ParseReplyTests(unittest.TestCase):
+    CODE = 'import torch\n\ndef build(weights, data, info):\n    return weights\n'
+
+    def test_fenced_block(self):
+        r = agent.parse_reply('I will fit a ridge head.\n\n```python\n' + self.CODE + '```\nDone.')
+        self.assertEqual(r['program'], self.CODE)
+        self.assertEqual(r['rationale'], 'I will fit a ridge head.')
+
+    def test_unclosed_fence_and_longest_build_block(self):
+        r = agent.parse_reply('why\n```python\nx = 1\n```\n```py\n' + self.CODE)
+        self.assertEqual(r['program'], self.CODE)
+
+    def test_fuzzy_json_with_raw_newlines_and_debris(self):
+        raw = '{"rationale": "r", "program": "' + self.CODE + '"}'
+        self.assertEqual(agent.parse_reply(raw)['program'], self.CODE)
+        self.assertEqual(agent.parse_reply('Here you go: ' + raw + ' thanks')['program'], self.CODE)
+        escaped = json.dumps({'rationale': 'r', 'program': self.CODE})
+        self.assertEqual(agent.parse_reply(escaped)['program'], self.CODE)
+
+    def test_bare_code_and_failure(self):
+        self.assertEqual(agent.parse_reply('Plan: x\n' + self.CODE)['program'], self.CODE)
+        with self.assertRaises(ValueError):
+            agent.parse_reply('I cannot help with that.')
+
+    def test_code_mode_request_has_no_response_format(self):
+        calls = []
+        message = SimpleNamespace(content='r\n```python\n' + self.CODE + '```')
+        response = SimpleNamespace(id='m', model='x', usage=None,
+                                   choices=[SimpleNamespace(finish_reason='stop', message=message)])
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **kw: calls.append(kw) or response)))
+        with patch.dict('sys.modules', {'openai': SimpleNamespace(OpenAI=lambda **kw: client)}), \
+             patch.dict('os.environ', {'OPENROUTER_API_KEY': 'k'}):
+            proposal, meta = agent.openrouter_proposer('x', 100)({})
+        self.assertEqual(proposal['program'], self.CODE)
+        self.assertNotIn('response_format', calls[0])
+        self.assertIn('NOT JSON', calls[0]['messages'][0]['content'])
+        self.assertIn('raw_reply', meta)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -249,6 +383,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertTrue(all(not frozen for name, frozen in loads if name != 'test'))
             self.assertEqual(len(json.loads((out / 'subset_indices.json').read_text())), 200)
             self.assertEqual(json.loads((out / 'round_001' / 'input.json').read_text())['data_budget']['examples'], 200)
+            self.assertIn('def build', json.loads((out / 'round_001' / 'input.json').read_text())['example_program']['source'])
             self.assertTrue(json.loads((out / 'round_001' / 'result.json').read_text())['accepted'])
             self.assertTrue((out / 'final_test.json').exists())
 
