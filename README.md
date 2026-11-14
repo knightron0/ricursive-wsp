@@ -85,5 +85,10 @@ disabled. The isolation uses Python audit hooks: it's process isolation, **not a
 | `wsp/data.py`, `model.py`, `evaluation.py`, `toolkit.py` | splits (45k train / 5k val / test), ResNet-18, scoring, sandbox helpers |
 
 Each run writes `runs/<timestamp>/`: `config.json`, `subset_indices.json`, `prompt.json`,
-`calls.json` (every call with its phase, executed or refused), `transcript.json`, `usage.json`,
-`audit.json`, `workspace/`, and once there's a valid submission, `weights.pt` and `result.json`.
+`calls.json` (every call with its phase and status: `ok`, `refused` by the mode or phase rules, or `failed` on
+invalid input; results longer than 2,000 characters keep their head and tail), `transcript.json`, `usage.json`,
+`audit.json`, `workspace/`, and once there's a valid submission, `weights.pt` and `result.json`. `calls.json`,
+`transcript.json` and `usage.json` are rewritten after every turn. Stdout gets one line per turn: that turn's calls
+with their status, the phase (`reasoned`), wall time, and tokens and cost when the provider reports them, e.g.
+`turn 36 [phase 1->2]: tools, end_tools | 81s | in 52.0k (50.0k cached), out 3.1k, $0.061`.
+A diff with several invalid tensors is rejected with all of them listed.

@@ -1,5 +1,7 @@
 """Offline tests: no API key, no network, no CIFAR download (tiny random splits stand in)."""
+from contextlib import redirect_stdout
 from functools import partial
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -9,9 +11,9 @@ from unittest.mock import patch
 import torch
 
 from wsp import data as datasets
-from wsp.__main__ import main
+from wsp.__main__ import describe, main, turn_line
 from wsp.agent import ScriptedAgent, run_episode
-from wsp.episode import Episode, audit, pixels_text
+from wsp.episode import Episode, audit, clip, pixels_text
 from wsp.model import initial_weights, state_shapes
 from wsp.prompt import tool_specs
 from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
@@ -240,6 +242,18 @@ class DiffTests(unittest.TestCase):
             with self.subTest(pattern), self.assertRaisesRegex(ValueError, pattern):
                 apply_diff(start, diff, 100)
 
+    def test_all_problems_reported_together(self):
+        start = initial_weights(10)
+        diff = [{'name': 'layer4.1.bn2.weight', 'values': [0] * 504}, {'name': 'fc.bias', 'values': [0.0] * 10},
+                {'name': 'layer3.1.bn2.weight', 'values': [0] * 258}, {'name': 'nope', 'values': [1]}]
+        with self.assertRaises(ValueError) as ctx:
+            apply_diff(start, diff, 10000)
+        message = str(ctx.exception)
+        self.assertTrue(message.startswith('3 problems, nothing applied: '))
+        for part in ('layer4.1.bn2.weight: got 504', 'layer3.1.bn2.weight: got 258', "'nope' is not a writable"):
+            self.assertIn(part, message)
+        self.assertNotIn('fc.bias', message)
+
     def test_empty_submit_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             ep = episode('blind', tmp)
@@ -262,6 +276,49 @@ class DiffTests(unittest.TestCase):
         self.assertTrue(torch.equal(start['conv1.weight'], source['conv1.weight']))
 
 
+class LoggingTests(unittest.TestCase):
+    def test_call_status_and_clipped_result(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            ep.call('submit', BIAS)
+            ep.call('tools', {'code': "print('a' * 3000 + 'END')"})
+            ep.call('tools', {'code': "raise ValueError('boom')"})
+            ep.call('end_tools', {})
+            ep.call('evaluate', {'weights': [{'name': 'fc.bias', 'values': [0.0]}]})
+            ep.call('tools', {'code': 'print(1)'})
+            self.assertEqual([e['status'] for e in ep.log], ['refused', 'ok', 'ok', 'ok', 'failed', 'refused'])
+            long = ep.log[1]['result']
+            self.assertLess(len(long), 2100)
+            self.assertIn('chars omitted', long)
+            self.assertTrue(long.rstrip().endswith('END'))
+            self.assertEqual(clip('short'), 'short')
+            self.assertEqual([describe(e) for e in ep.log][:2], [
+                'submit (refused: submit() is available only in phase 2. Call end_tools() to enter it; that '
+                'permanently disables tools())', 'tools'])
+            self.assertEqual(describe(ep.log[2]), 'tools (exit code 1)')
+            self.assertEqual(describe(ep.log[4]), 'evaluate (failed: fc.bias: got 1 numbers, shape [10] needs 10)')
+
+    def test_turn_line(self):
+        entries = [{'call': 'tools', 'phase': 1, 'status': 'ok', 'result': 'x'},
+                   {'call': 'end_tools', 'phase': 1, 'status': 'ok', 'result': 'Phase 2 has started.'}]
+        openrouter = {'prompt_tokens': 52000, 'completion_tokens': 3100, 'cost': 0.061,
+                      'prompt_tokens_details': {'cached_tokens': 50000}}
+        self.assertEqual(turn_line(36, entries, 'reasoned', True, 81.4, openrouter),
+                         'turn 36 [phase 1->2]: tools, end_tools | 81s | in 52.0k (50.0k cached), out 3.1k, $0.061')
+        anthropic = {'input_tokens': 200, 'cache_read_input_tokens': 40000, 'cache_creation_input_tokens': 1800,
+                     'output_tokens': 900}
+        self.assertEqual(turn_line(3, [], 'full', False, 5, anthropic),
+                         'turn 3: no calls | 5s | in 42.0k (40.0k cached), out 0.9k')
+        self.assertEqual(turn_line(2, [], 'reasoned', False, 1, None), 'turn 2 [phase 1]: no calls | 1s')
+
+    def test_no_call_turns_are_logged(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep, turns = episode('reasoned', tmp), []
+            agent = ScriptedAgent([[], [{'name': 'end_tools', 'args': {}}], [{'name': 'submit', 'args': BIAS}]])
+            run_episode(agent, ep, on_turn=turns.append)
+            self.assertEqual(turns, [1, 2, 3])
+
+
 class EndToEndTests(unittest.TestCase):
     def test_scripted_reasoned_run(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
@@ -274,8 +331,20 @@ class EndToEndTests(unittest.TestCase):
                                           [{'name': 'labels', 'args': {'indices': [59]}}],
                                           [{'name': 'submit', 'args': BIAS}]]))
             out = Path(tmp) / 'run'
-            main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--script', str(script),
-                  '--data-dir', tmp, '--device', 'cpu', '--output', str(out), '--evaluate-test'])
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--script',
+                      str(script), '--data-dir', tmp, '--device', 'cpu', '--output', str(out), '--evaluate-test'])
+            lines = [l.split(' | ')[0] for l in printed.getvalue().splitlines() if l.startswith('turn ')]
+            self.assertEqual(lines, [
+                'turn 1 [phase 1]: tools',
+                'turn 2 [phase 1]: submit (refused: submit() is available only in phase 2. Call end_tools() to enter '
+                'it; that permanently disables tools())',
+                'turn 3 [phase 1->2]: end_tools',
+                'turn 4 [phase 2]: tools (refused: tools() is permanently disabled: end_tools() has been called)',
+                'turn 5 [phase 2]: labels',
+                'turn 6 [phase 2]: submit'])
+            self.assertTrue((out / 'transcript.json').exists() and (out / 'usage.json').exists())
             self.assertEqual(json.loads((out / 'audit.json').read_text()), {'clean': True, 'problems': []})
             calls = json.loads((out / 'calls.json').read_text())
             self.assertEqual([(c['call'], c['executed']) for c in calls],

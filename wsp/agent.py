@@ -204,6 +204,8 @@ def run_episode(agent, episode, max_turns=40, on_turn=None):
                        if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
             if isinstance(agent, ScriptedAgent) and not agent.turns:
                 return
+            if on_turn:
+                on_turn(turn)
             continue
         results = []
         for call_id, name, args in calls:

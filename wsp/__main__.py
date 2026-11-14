@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 import torch
 
@@ -31,6 +32,42 @@ from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
 
 def save(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False, default=str) + '\n')
+
+
+def describe(entry):
+    first = entry['result'].split('\n', 1)[0]
+    if entry.get('status') in ('refused', 'failed'):
+        return f'{entry["call"]} ({entry["status"]}: {first.removeprefix(entry["call"] + "() failed: ")[:160]})'
+    if entry['call'] == 'tools' and first.startswith(('exit code', 'timed out')):
+        return f'tools ({first})'
+    return entry['call']
+
+
+def usage_summary(usage):
+    if not usage:
+        return None
+    if 'cache_read_input_tokens' in usage or 'cache_creation_input_tokens' in usage:
+        cached = usage.get('cache_read_input_tokens') or 0
+        total = (usage.get('input_tokens') or 0) + cached + (usage.get('cache_creation_input_tokens') or 0)
+    else:
+        details = usage.get('prompt_tokens_details') or usage.get('input_tokens_details') or {}
+        cached = details.get('cached_tokens') or 0
+        total = usage.get('prompt_tokens', usage.get('input_tokens')) or 0
+    out = usage.get('output_tokens', usage.get('completion_tokens')) or 0
+    parts = [f'in {total / 1000:.1f}k ({cached / 1000:.1f}k cached)', f'out {out / 1000:.1f}k']
+    if usage.get('cost') is not None:
+        parts.append(f'${usage["cost"]:.3f}')
+    return ', '.join(parts)
+
+
+def turn_line(turn, entries, mode, locked, seconds, usage):
+    head = f'turn {turn}'
+    if mode == 'reasoned':
+        end = 2 if locked else 1
+        start = entries[0]['phase'] if entries else end
+        head += f' [phase {start}]' if start == end else f' [phase {start}->{end}]'
+    tail = [f'{seconds:.0f}s'] + [s for s in [usage_summary(usage)] if s]
+    return f'{head}: {", ".join(map(describe, entries)) or "no calls"} | {" | ".join(tail)}'
 
 
 def parse_args(argv=None):
@@ -112,9 +149,17 @@ def main(argv=None):
                                      'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
                  a.max_tokens, a.effort))
 
+    progress = {'logged': 0, 'time': time.monotonic()}
+
     def checkpoint(turn):
         save(out / 'calls.json', log)
-        print(f'turn {turn}: ' + ', '.join(f'{e["call"]}{"" if e["executed"] else " (refused)"}' for e in log[-5:]))
+        save(out / 'transcript.json', agent.transcript())
+        save(out / 'usage.json', agent.usage)
+        now = time.monotonic()
+        entries, progress['logged'] = log[progress['logged']:], len(log)
+        print(turn_line(turn, entries, a.mode, episode.locked, now - progress['time'],
+                        agent.usage[-1] if agent.usage else None), flush=True)
+        progress['time'] = now
 
     try:
         run_episode(agent, episode, a.max_turns, checkpoint)

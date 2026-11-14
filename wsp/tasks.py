@@ -86,27 +86,35 @@ def apply_diff(start, diff, max_numbers):
     if not isinstance(diff, list):
         raise ValueError('weights must be a list of {"name", "values"}')
     writable, result, total = set(writable_names(start)), {k: v.clone() for k, v in start.items()}, 0
-    seen = set()
+    seen, problems = set(), []
     for entry in diff:
         name = entry.get('name') if isinstance(entry, dict) else None
         if name not in writable:
-            raise ValueError(f'{name!r} is not a writable tensor name')
+            problems.append(f'{name!r} is not a writable tensor name')
+            continue
         if name in seen:
-            raise ValueError(f'{name} is listed twice')
+            problems.append(f'{name} is listed twice')
+            continue
         seen.add(name)
         try:
             tensor = torch.tensor(entry.get('values'), dtype=torch.float32).flatten()
         except (TypeError, ValueError, RuntimeError) as e:
-            raise ValueError(f'{name}: values must be numbers ({e})') from None
+            problems.append(f'{name}: values must be numbers ({e})')
+            continue
         ref = start[name]
         if tensor.numel() != ref.numel():
-            raise ValueError(f'{name}: got {tensor.numel()} numbers, shape {list(ref.shape)} needs {ref.numel()}')
-        if not torch.isfinite(tensor).all():
-            raise ValueError(f'{name}: contains NaN or inf')
-        if name.endswith('running_var') and (tensor < 0).any():
-            raise ValueError(f'{name}: running_var must be non-negative')
-        result[name] = tensor.view(ref.shape).contiguous()
-        total += tensor.numel()
+            problems.append(f'{name}: got {tensor.numel()} numbers, shape {list(ref.shape)} needs {ref.numel()}')
+        elif not torch.isfinite(tensor).all():
+            problems.append(f'{name}: contains NaN or inf')
+        elif name.endswith('running_var') and (tensor < 0).any():
+            problems.append(f'{name}: running_var must be non-negative')
+        else:
+            result[name] = tensor.view(ref.shape).contiguous()
+            total += tensor.numel()
     if total > max_numbers:
-        raise ValueError(f'{total} numbers in the diff; the limit is {max_numbers}')
+        problems.append(f'{total} numbers in the diff; the limit is {max_numbers}')
+    if len(problems) > 1:
+        raise ValueError(f'{len(problems)} problems, nothing applied: ' + '; '.join(problems))
+    if problems:
+        raise ValueError(problems[0])
     return result, total

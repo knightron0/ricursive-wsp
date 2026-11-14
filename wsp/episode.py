@@ -61,19 +61,19 @@ class Episode:
         """Run one call; returns (text, is_error). Every call is logged with its phase."""
         entry = {'call': name, 'phase': 2 if self.locked else 1, 'executed': False}
         if name not in ALLOWED[self.mode]:
-            text, error = f'{name}() is not available in {self.mode} mode', True
+            text, error, status = f'{name}() is not available in {self.mode} mode', True, 'refused'
         elif name == 'tools' and self.locked:
-            text, error = 'tools() is permanently disabled: end_tools() has been called', True
+            text, error, status = 'tools() is permanently disabled: end_tools() has been called', True, 'refused'
         elif self.mode == 'reasoned' and not self.locked and name in PHASE2_CALLS:
-            text, error = (f'{name}() is available only in phase 2. Call end_tools() to enter it; that '
-                           'permanently disables tools()'), True
+            text, error, status = (f'{name}() is available only in phase 2. Call end_tools() to enter it; that '
+                                   'permanently disables tools()'), True, 'refused'
         else:
             try:
-                text, error = getattr(self, f'_{name}')(args), False
+                text, error, status = getattr(self, f'_{name}')(args), False, 'ok'
                 entry['executed'] = True
             except (ValueError, KeyError, TypeError) as e:
-                text, error = f'{name}() failed: {e}', True
-        entry.update(error=error, args=_summary(args), result=text[:2000])
+                text, error, status = f'{name}() failed: {e}', True, 'failed'
+        entry.update(status=status, error=error, args=_summary(args), result=clip(text))
         self.log.append(entry)
         return text, error
 
@@ -129,6 +129,12 @@ class Episode:
         weights, numbers = self.apply_diff(self.start, args['weights'])
         self.submission = weights
         return f'accepted: {numbers} numbers in {len(args["weights"])} tensors'
+
+
+def clip(text, limit=2000):
+    if len(text) <= limit:
+        return text
+    return f'{text[:limit // 2]}\n[... {len(text) - limit} chars omitted ...]\n{text[-(limit // 2):]}'
 
 
 def _summary(args):
