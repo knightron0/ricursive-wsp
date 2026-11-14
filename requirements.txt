@@ -1,4 +1,4 @@
 torch>=2.2
 torchvision>=0.17
-numpy
+anthropic>=2.0
 openai>=2.0

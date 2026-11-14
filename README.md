@@ -1,100 +1,87 @@
 # ricursive-wsp: weight-space programming
 
-An LLM **writes the weights of a ResNet-18 directly**, as Python programs, with no
-gradient descent, no internet and only X% of the training data.
+An agent writes the weights of a ResNet-18 as **literal numbers**. Its one answer is a diff over
+the initialized network: the tensors it wants to change, with every value. Tensors it leaves out
+keep their start values. The submitted network is scored once on held-out val (and test), which
+the agent never sees. Everything the agent sees is text: no image blocks, no vision encoder.
 
-| Task | Start weights | Data the program gets | Scored on |
-|---|---|---|---|
-| `scratch-cifar10` | random ResNet-18 init (10 classes) | X% of CIFAR-10 train | CIFAR-10 val / test |
-| `cifar10-to-cifar100` | ResNet-18 trained on CIFAR-10, fc reinitialized for 100 classes | X% of CIFAR-100 train | CIFAR-100 val / test |
+## Calls
 
-```
-start weights ─► val diagnostics ─► LLM writes build(weights, data, info)
-      ▲                                          │
-      │                 restricted subprocess: no grads, no network, only the X% subset
-      │                                          │
-      └── keep if val accuracy improves ◄── evaluate on val
-                         ...rounds...
-      freeze best.pt (sha256) ─► optionally score start vs best on test, once
-```
+| Call | Returns to the agent | Runs in |
+|---|---|---|
+| `data(indices)` | training images as hex pixel text (96 rows of 64 hex digits each; ≤16 per call), never labels | harness |
+| `labels(indices)` | class labels | harness |
+| `tools(code)` | stdout/stderr of Python run in the sandbox | sandbox |
+| `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only) | harness |
+| `submit(weights)` | validation result; a valid diff ends the episode | harness |
 
-## Setup
+## Modes
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python train_base.py     # downloads CIFAR-10, trains the CIFAR-10 source model (cifar10-to-cifar100 only)
-```
+| Mode | Calls | What sandbox code can read |
+|---|---|---|
+| `blind` | `tools`, `submit` | no data |
+| `reasoned` | all five, but **the first `labels()` or `evaluate()` permanently disables `tools()`** | pool images only |
+| `full` | all five | training images and labels |
+
+No gradients in any mode: autograd, `torch.optim` and `torch.func` transforms are disabled in the sandbox.
+
+`reasoned` splits the training subset into two disjoint, class-balanced parts (`--labeled-share`, default 0.5):
+- **pool** (indices `0..P-1`): unlabeled images. The sandbox holds these, and `data()` shows them. Their labels are never returned by any call.
+- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them. Their pixels (`data()`) become visible only after the lock.
+
+`labels()` and `evaluate()` both carry label information, so whichever executes first is the lock: `tools()` is
+gone for good, while `labels()`, `evaluate()` and `data()` stay available. So nothing derived from a label ever
+reaches code: every number code computes describes a pool image, and every label, labeled image and score is
+seen only in context. This closes two exploits seen in earlier runs: precomputing a fit in code and finishing it
+once the labels arrive, and probing `evaluate()` with crafted diffs, pasting the confusion matrices into
+`tools()` and solving for class statistics.
+
+What's checked mechanically, by the harness and by `audit.json` after each run:
+1. In `reasoned`, no `tools()` call executes after the first executed `labels()` or `evaluate()`.
+2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image is shown before the lock.
+3. No call outside the mode's list ever executes.
+4. The sandbox's `data.pt` holds labels only in `full` (in `reasoned`, pool images only).
+5. The transcript holds no `image` or `document` blocks.
 
 ## Run
 
 ```bash
-export OPENAI_API_KEY=...
-python agent.py --task scratch-cifar10 --data-fraction 0.1 --rounds 20 --evaluate-test
-python agent.py --task cifar10-to-cifar100 --data-fraction 0.1 --rounds 20 --evaluate-test
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+python train_base.py            # only for cifar10-to-cifar100: trains the CIFAR-10 source model
 
-# Any OpenRouter model (OpenAI-compatible Chat Completions, strict JSON schema)
-export OPENROUTER_API_KEY=...
-python agent.py --provider openrouter --model anthropic/claude-opus-5-5 \
-    --task scratch-cifar10 --data-fraction 0.1 --rounds 20 --evaluate-test
+export ANTHROPIC_API_KEY=...    # Claude Sonnet 5.5 by default (--model, --effort)
+# or --provider openai (OPENAI_API_KEY), or --provider openrouter (OPENROUTER_API_KEY, Opus 5.5 by default)
+python -m wsp --task scratch-cifar10 --mode blind
+python -m wsp --task scratch-cifar10 --mode reasoned --data-fraction 0.1
+python -m wsp --task scratch-cifar10 --mode full     --data-fraction 0.1 --evaluate-test
 
-# No API: preview the first prompt, or run hand-written programs
-python agent.py --task scratch-cifar10 --data-fraction 0.1 --dry-run
-python agent.py --task scratch-cifar10 --data-fraction 0.1 --programs examples/programs/random_features.py
-python agent.py --task cifar10-to-cifar100 --data-fraction 0.1 --programs examples/programs/linear_probe.py
-python -m unittest test_agent.py
+python -m wsp ... --dry-run                 # write the prompt and tool definitions, no API call
+python -m wsp ... --script calls.json       # replay scripted calls, no API call
+python -m unittest test_wsp.py              # offline tests
 ```
 
-## The program the LLM writes
+A script is a JSON list of turns, each a list of `{"name": ..., "args": {...}}`.
 
-```python
-def build(weights, data, info):
-    # weights: current best ResNet-18 state_dict {name: tensor}
-    # data:    {"images": uint8 [N,3,32,32], "labels": [N], "classes": [...]}, the X% subset only
-    # info:    task, num_classes, data budget, current val metrics
-    ...
-    return weights   # same names and shapes, finite, running_var >= 0
-```
+## Sandbox (`wsp/sandbox.py`)
 
-`torch`, `math` and `toolkit` (`wsp/toolkit.py`) are available. The toolkit runs the
-network and captures any module's outputs, or the per-channel mean/var needed for
-BatchNorm; it also extracts image patches and does ZCA whitening, k-means and
-ridge regression.
+Each `tools()` call is a fresh Python process in the run's `workspace/`, whose files persist
+between calls. `torch`, `math`, `toolkit`, `data` and `start` (the start state_dict) are
+preloaded. There's no network, no subprocesses, threads or ctypes, and no API keys. Code can read
+only the Python install, `wsp/` and the workspace, and can write only the workspace. Gradients are
+disabled. The isolation uses Python audit hooks: it's process isolation, **not a security sandbox**.
 
-## Rules the harness enforces
+## Files
 
-- **Data budget:** `--data-fraction X` picks a fixed, class-balanced subset of the
-  45k train split (`--data-seed`). Its indices are saved in the run directory.
-  Only that subset is handed to the program.
-- **No gradients:** grad mode is off and can't be turned back on; `torch.optim` and
-  `torch.func` gradient transforms are removed (`--allow-gradients` lifts this).
-- **No internet, no other data:** an audit hook blocks sockets, DNS, subprocesses
-  and threads. Programs can read only the Python/torch install, `wsp/` and their
-  own temp directory, and can write only there. The API key is removed from their
-  environment. The only network traffic is the harness calling the LLM.
-  This is best-effort isolation, **not a security sandbox**: generated code runs
-  as your user.
-- **Splits:** 5k of the official train set is val (the search signal); test is
-  loaded only after `best.pt` is frozen, and never shown to the model.
-- **Acceptance:** strictly higher val accuracy, ties broken by lower loss. Rounds
-  build on the current best. Failed programs (errors, timeouts, bad shapes, NaNs)
-  are fed back to the model and the run continues. API failures stop the run.
-
-## Each round the LLM sees
-
-Task description, ResNet-18 layout and state_dict naming, toolkit docs, data
-budget, per-tensor stats, val accuracy and loss, per-class accuracy (the worst
-and best classes for CIFAR-100), top confusions, dead-channel fraction per stage,
-accepted programs so far, and the last `--history` attempts with code and results
-or tracebacks.
-
-## Output: `runs/<timestamp>/`
-
-| File | Contents |
+| Path | Role |
 |---|---|
-| `best.pt`, `best_metrics.json` | Best weights and their val diagnostics |
-| `baseline_val.json` | Val diagnostics of the start weights |
-| `lineage.json` | Accepted programs in order (replay from start to reproduce `best.pt`) |
-| `round_NNN/` | `input.json` (exact prompt), `program.py`, `result.json` (outcome, tokens) |
-| `subset_indices.json`, `data_subset.pt` | The exact training data the programs got |
-| `frozen.json`, `final_test.json` | Hash of `best.pt`; start vs best test accuracy |
+| `wsp/__main__.py` | CLI: subset, prompt, episode, audit, val/test scoring |
+| `wsp/episode.py` | the five calls, the mode rules, the `reasoned` lock, the audit |
+| `wsp/agent.py` | Anthropic agent (streaming, adaptive thinking, prompt caching, server-side refusal fallback), scripted agent, episode loop |
+| `wsp/prompt.py` | system and user prompt, per-mode rules, tool definitions |
+| `wsp/sandbox.py` | runs one `tools()` call |
+| `wsp/tasks.py` | the two tasks, start weights, diff validation |
+| `wsp/data.py`, `model.py`, `evaluation.py`, `toolkit.py` | splits (45k train / 5k val / test), ResNet-18, scoring, sandbox helpers |
+
+Each run writes `runs/<timestamp>/`: `config.json`, `subset_indices.json`, `prompt.json`,
+`calls.json` (every call with its phase, executed or refused), `transcript.json`, `usage.json`,
+`audit.json`, `workspace/`, and once there's a valid submission, `weights.pt` and `result.json`.
