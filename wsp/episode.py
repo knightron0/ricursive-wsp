@@ -13,7 +13,8 @@ reasoned mode splits the training subset into a pool (indices 0..pool-1) and a l
   2. end_tools() switches to phase 2 for good: tools() never executes again, and labels(),
      evaluate(), submit() and data() on the labeled set become available;
   3. the sandbox holds only pool images; pool labels are never returned by any call;
-  4. labels() covers only the labeled set, and evaluate() scores on it.
+  4. labels() covers only the labeled set, and evaluate() scores on it, returning the accuracy only.
+evaluate() and submit() check a diff's format first; a format rejection is logged with status "format".
 So nothing derived from a label ever reaches code, and no number computed by code describes an
 image whose label the agent sees.
 """
@@ -35,6 +36,10 @@ ALLOWED = {'blind': {'tools', 'submit'},
 PHASE2_CALLS = {'labels', 'evaluate', 'submit'}
 MAX_IMAGES_PER_CALL = 16
 MAX_OUTPUT_CHARS = 10000
+
+
+class FormatError(ValueError):
+    pass
 
 
 def pixels_text(image):
@@ -60,20 +65,28 @@ class Episode:
     def call(self, name, args):
         """Run one call; returns (text, is_error). Every call is logged with its phase."""
         entry = {'call': name, 'phase': 2 if self.locked else 1, 'executed': False}
+        status = 'refused'
         if name not in ALLOWED[self.mode]:
-            text, error, status = f'{name}() is not available in {self.mode} mode', True, 'refused'
+            text = reason = f'{name}() is not available in {self.mode} mode'
         elif name == 'tools' and self.locked:
-            text, error, status = 'tools() is permanently disabled: end_tools() has been called', True, 'refused'
+            text = reason = 'tools() is permanently disabled: end_tools() has been called'
         elif self.mode == 'reasoned' and not self.locked and name in PHASE2_CALLS:
-            text, error, status = (f'{name}() is available only in phase 2. Call end_tools() to enter it; that '
-                                   'permanently disables tools()'), True, 'refused'
+            text = reason = (f'{name}() is available only in phase 2. Call end_tools() to enter it; that '
+                             'permanently disables tools()')
         else:
             try:
-                text, error, status = getattr(self, f'_{name}')(args), False, 'ok'
+                text, status, reason = getattr(self, f'_{name}')(args), 'ok', None
                 entry['executed'] = True
+            except FormatError as e:
+                status, reason = 'format', str(e)
+                text = f'{name}() not run, the diff has format problems (fix them and call again): {e}'
             except (ValueError, KeyError, TypeError) as e:
-                text, error, status = f'{name}() failed: {e}', True, 'failed'
+                status, reason = 'failed', str(e)
+                text = f'{name}() failed: {e}'
+        error = status != 'ok'
         entry.update(status=status, error=error, args=_summary(args), result=clip(text))
+        if reason is not None:
+            entry['reason'] = reason
         self.log.append(entry)
         return text, error
 
@@ -116,17 +129,25 @@ class Episode:
         except subprocess.TimeoutExpired:
             return f'timed out after {self.timeout}s'
 
+    def _diff(self, args):
+        try:
+            return self.apply_diff(self.start, args.get('weights'))
+        except ValueError as e:
+            raise FormatError(str(e)) from None
+
     def _evaluate(self, args):
-        weights, _ = self.apply_diff(self.start, args['weights'])
+        weights, _ = self._diff(args)
         m = evaluate(weights, (self.images[self.pool:], self.labels[self.pool:]), self.classes, self.device)
+        if self.mode == 'reasoned':
+            return json.dumps({'accuracy': m['accuracy']})
         m.pop('activations', None)
         return json.dumps(m)
 
     def _submit(self, args):
-        if not args['weights']:
-            raise ValueError('the diff is empty: it would leave the start network unchanged. Write the tensors you '
-                             'want to set, every number in them')
-        weights, numbers = self.apply_diff(self.start, args['weights'])
+        if not args.get('weights'):
+            raise FormatError('the diff is empty: it would leave the start network unchanged. Write the tensors you '
+                              'want to set, every number in them')
+        weights, numbers = self._diff(args)
         self.submission = weights
         return f'accepted: {numbers} numbers in {len(args["weights"])} tensors'
 

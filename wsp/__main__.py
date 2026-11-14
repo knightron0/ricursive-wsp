@@ -26,7 +26,7 @@ from wsp.agent import AnthropicAgent, OpenAIAgent, OpenRouterAgent, ScriptedAgen
 from wsp.episode import MODES, Episode, audit
 from wsp.evaluation import evaluate, summarize
 from wsp.model import default_device
-from wsp.prompt import SYSTEM, tool_specs, user_prompt
+from wsp.prompt import system_prompt, tool_specs, user_prompt
 from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
 
 
@@ -36,8 +36,8 @@ def save(path, value):
 
 def describe(entry):
     first = entry['result'].split('\n', 1)[0]
-    if entry.get('status') in ('refused', 'failed'):
-        return f'{entry["call"]} ({entry["status"]}: {first.removeprefix(entry["call"] + "() failed: ")[:160]})'
+    if entry.get('status', 'ok') != 'ok':
+        return f'{entry["call"]} ({entry["status"]}: {(entry.get("reason") or first)[:160]})'
     if entry['call'] == 'tools' and first.startswith(('exit code', 'timed out')):
         return f'tools ({first})'
     return entry['call']
@@ -60,8 +60,8 @@ def usage_summary(usage):
     return ', '.join(parts)
 
 
-def turn_line(turn, entries, mode, locked, seconds, usage):
-    head = f'turn {turn}'
+def turn_line(turn, entries, mode, locked, seconds, usage, counted=True):
+    head = f'turn {turn}' if counted else f'turn {turn + 1} retry (format only, not counted)'
     if mode == 'reasoned':
         end = 2 if locked else 1
         start = entries[0]['phase'] if entries else end
@@ -83,7 +83,9 @@ def parse_args(argv=None):
     p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), anthropic/claude-opus-5.5 (openrouter)')
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
     p.add_argument('--max-tokens', type=int, default=64000, help='Per model turn')
-    p.add_argument('--max-turns', type=int, default=40)
+    p.add_argument('--max-turns', type=int, default=10, help='Model replies; format-only rejections do not count')
+    p.add_argument('--format-retries', type=int, default=3,
+                   help='Most replies that may go uncounted because every call in them was a format rejection')
     p.add_argument('--max-numbers', type=int, default=20000, help='Most numbers a diff may hold')
     p.add_argument('--tool-timeout', type=float, default=300)
     p.add_argument('--script', type=Path, help='Replay scripted calls instead of calling the API')
@@ -134,8 +136,10 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=False)
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist(), 'pool': pool})
-    prompt, tools = user_prompt(task, a.mode, start, len(subset), a.max_numbers, pool), tool_specs(a.mode, writable_names(start))
-    save(out / 'prompt.json', {'system': SYSTEM, 'user': prompt, 'tools': tools})
+    system = system_prompt(a.mode)
+    prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, pool, a.max_turns, a.format_retries)
+    tools = tool_specs(a.mode, writable_names(start))
+    save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
     if a.dry_run:
         return
@@ -145,24 +149,24 @@ def main(argv=None):
                       partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log, pool)
     agent = (ScriptedAgent.from_file(a.script) if a.script
              else {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent}[a.provider](
-                 SYSTEM, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
+                 system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
                                      'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
                  a.max_tokens, a.effort))
 
     progress = {'logged': 0, 'time': time.monotonic()}
 
-    def checkpoint(turn):
+    def checkpoint(turn, counted=True):
         save(out / 'calls.json', log)
         save(out / 'transcript.json', agent.transcript())
         save(out / 'usage.json', agent.usage)
         now = time.monotonic()
         entries, progress['logged'] = log[progress['logged']:], len(log)
         print(turn_line(turn, entries, a.mode, episode.locked, now - progress['time'],
-                        agent.usage[-1] if agent.usage else None), flush=True)
+                        agent.usage[-1] if agent.usage else None, counted), flush=True)
         progress['time'] = now
 
     try:
-        run_episode(agent, episode, a.max_turns, checkpoint)
+        run_episode(agent, episode, a.max_turns, checkpoint, a.format_retries)
     finally:
         save(out / 'calls.json', log)
         save(out / 'transcript.json', agent.transcript())

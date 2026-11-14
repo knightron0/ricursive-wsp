@@ -195,25 +195,50 @@ class ScriptedAgent:
         return ['text']
 
 
-def run_episode(agent, episode, max_turns=40, on_turn=None):
-    results = None
-    for turn in range(1, max_turns + 1):
+def turn_note(episode, turn, max_turns, counted, retries_left):
+    left = max_turns - turn
+    if counted:
+        note = f'[harness] Turn {turn} of {max_turns} done; {left} turn{"" if left == 1 else "s"} left.'
+    else:
+        note = (f'[harness] Every call in this reply was rejected for format problems, so it did not count as a turn '
+                f'(uncounted format retries left: {retries_left}). Still {left} turn{"" if left == 1 else "s"} left.')
+    if left == 1:
+        note += ' Your next reply is your last turn: it must contain a valid submit().'
+        if episode.mode == 'reasoned' and not episode.locked:
+            note += ' You are still in phase 1, so call end_tools() before submit() in that same reply.'
+    return note
+
+
+def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
+    results, turn, retries = None, 0, format_retries
+    while turn < max_turns:
         calls = agent.next(results)
         if not calls:
-            results = ('Call end_tools(), then submit() with your diff to finish.'
-                       if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
             if isinstance(agent, ScriptedAgent) and not agent.turns:
                 return
+            turn += 1
+            nudge = ('Call end_tools(), then submit() with your diff to finish.'
+                     if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
+            results = f'{nudge}\n\n{turn_note(episode, turn, max_turns, True, retries)}'
             if on_turn:
-                on_turn(turn)
+                on_turn(turn, True)
             continue
+        first = len(episode.log)
         results = []
         for call_id, name, args in calls:
             text, error = episode.call(name, args)
             results.append((call_id, text, error))
             if episode.submission is not None:
                 break
+        entries = episode.log[first:]
+        counted = not (retries > 0 and entries and all(e['status'] == 'format' for e in entries))
+        if counted:
+            turn += 1
+        else:
+            retries -= 1
         if on_turn:
-            on_turn(turn)
+            on_turn(turn, counted)
         if episode.submission is not None:
             return
+        call_id, text, error = results[-1]
+        results[-1] = (call_id, f'{text}\n\n{turn_note(episode, turn, max_turns, counted, retries)}', error)

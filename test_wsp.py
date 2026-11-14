@@ -14,8 +14,9 @@ from wsp import data as datasets
 from wsp.__main__ import describe, main, turn_line
 from wsp.agent import ScriptedAgent, run_episode
 from wsp.episode import Episode, audit, clip, pixels_text
+from wsp.evaluation import evaluate
 from wsp.model import initial_weights, state_shapes
-from wsp.prompt import tool_specs
+from wsp.prompt import system_prompt, tool_specs, user_prompt
 from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
 
 ROOT = Path(__file__).resolve().parent
@@ -119,8 +120,9 @@ class LockTests(unittest.TestCase):
             agent = Recorder([[], [{'name': 'end_tools', 'args': {}}], [], [{'name': 'submit', 'args': BIAS}]])
             run_episode(agent, ep)
             nudges = [r for r in agent.seen if isinstance(r, str)]
-            self.assertEqual(nudges, ['Call end_tools(), then submit() with your diff to finish.',
-                                      'Call submit() with your diff to finish.'])
+            self.assertEqual([n.split('\n')[0] for n in nudges], ['Call end_tools(), then submit() with your diff to finish.',
+                                                                  'Call submit() with your diff to finish.'])
+            self.assertIn('[harness] Turn 1 of 10 done; 9 turns left.', nudges[0])
             self.assertIsNotNone(ep.submission)
 
     def test_pool_and_labeled_set_rules(self):
@@ -136,12 +138,18 @@ class LockTests(unittest.TestCase):
             self.assertFalse(ep.call('data', {'indices': [10]})[1])
             self.assertEqual(audit('reasoned', ep.log, pool=10), [])
 
-    def test_evaluate_scores_labeled_set_only(self):
+    def test_evaluate_scores_labeled_set_only_and_returns_accuracy_only(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
             ep.call('end_tools', {})
             m = json.loads(ep.call('evaluate', BIAS)[0])
-            self.assertEqual(sum(m['prediction_counts'].values()), 10)
+            self.assertEqual(set(m), {'accuracy'})
+            weights, _ = apply_diff(ep.start, BIAS['weights'], 10000)
+            labeled = evaluate(weights, (ep.images[10:], ep.labels[10:]), CLASSES, 'cpu')['accuracy']
+            self.assertEqual(m['accuracy'], labeled)
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            m = json.loads(episode('full', tmp).call('evaluate', BIAS)[0])
+            self.assertIn('confusion', m)
 
     def test_audit_catches_broken_phases_and_images(self):
         log = [{'call': 'end_tools', 'executed': True}, {'call': 'tools', 'executed': True}]
@@ -286,7 +294,7 @@ class LoggingTests(unittest.TestCase):
             ep.call('end_tools', {})
             ep.call('evaluate', {'weights': [{'name': 'fc.bias', 'values': [0.0]}]})
             ep.call('tools', {'code': 'print(1)'})
-            self.assertEqual([e['status'] for e in ep.log], ['refused', 'ok', 'ok', 'ok', 'failed', 'refused'])
+            self.assertEqual([e['status'] for e in ep.log], ['refused', 'ok', 'ok', 'ok', 'format', 'refused'])
             long = ep.log[1]['result']
             self.assertLess(len(long), 2100)
             self.assertIn('chars omitted', long)
@@ -296,7 +304,8 @@ class LoggingTests(unittest.TestCase):
                 'submit (refused: submit() is available only in phase 2. Call end_tools() to enter it; that '
                 'permanently disables tools())', 'tools'])
             self.assertEqual(describe(ep.log[2]), 'tools (exit code 1)')
-            self.assertEqual(describe(ep.log[4]), 'evaluate (failed: fc.bias: got 1 numbers, shape [10] needs 10)')
+            self.assertEqual(describe(ep.log[4]), 'evaluate (format: fc.bias: got 1 numbers, shape [10] needs 10)')
+            self.assertTrue(ep.log[4]['result'].startswith('evaluate() not run, the diff has format problems'))
 
     def test_turn_line(self):
         entries = [{'call': 'tools', 'phase': 1, 'status': 'ok', 'result': 'x'},
@@ -310,13 +319,68 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual(turn_line(3, [], 'full', False, 5, anthropic),
                          'turn 3: no calls | 5s | in 42.0k (40.0k cached), out 0.9k')
         self.assertEqual(turn_line(2, [], 'reasoned', False, 1, None), 'turn 2 [phase 1]: no calls | 1s')
+        rejected = [{'call': 'submit', 'phase': 2, 'status': 'format', 'reason': 'fc.bias: got 9', 'result': 'x'}]
+        self.assertEqual(turn_line(4, rejected, 'reasoned', True, 30, None, counted=False),
+                         'turn 5 retry (format only, not counted) [phase 2]: submit (format: fc.bias: got 9) | 30s')
 
     def test_no_call_turns_are_logged(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep, turns = episode('reasoned', tmp), []
             agent = ScriptedAgent([[], [{'name': 'end_tools', 'args': {}}], [{'name': 'submit', 'args': BIAS}]])
-            run_episode(agent, ep, on_turn=turns.append)
-            self.assertEqual(turns, [1, 2, 3])
+            run_episode(agent, ep, on_turn=lambda t, counted: turns.append((t, counted)))
+            self.assertEqual(turns, [(1, True), (2, True), (3, True)])
+
+
+class TurnTests(unittest.TestCase):
+    BAD = {'weights': [{'name': 'fc.bias', 'values': [0.0] * 9}]}
+
+    def recorder(self, turns):
+        class Recorder(ScriptedAgent):
+            def next(self, results):
+                self.seen = getattr(self, 'seen', []) + [results]
+                return super().next(results)
+        return Recorder(turns)
+
+    def test_format_only_replies_do_not_count(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep, turns = episode('reasoned', tmp), []
+            agent = self.recorder([[{'name': 'end_tools', 'args': {}}]] + [[{'name': 'submit', 'args': self.BAD}]] * 4
+                                  + [[{'name': 'submit', 'args': BIAS}]])
+            run_episode(agent, ep, max_turns=3, on_turn=lambda t, c: turns.append((t, c)), format_retries=3)
+            self.assertEqual(turns, [(1, True), (1, False), (1, False), (1, False), (2, True), (3, True)])
+            self.assertIsNotNone(ep.submission)
+            notes = [r[-1][1].split('\n\n')[-1] for r in agent.seen[1:]]
+            self.assertEqual(notes[0], '[harness] Turn 1 of 3 done; 2 turns left.')
+            self.assertEqual(notes[1], '[harness] Every call in this reply was rejected for format problems, so it did '
+                                       'not count as a turn (uncounted format retries left: 2). Still 2 turns left.')
+            self.assertEqual(notes[4], '[harness] Turn 2 of 3 done; 1 turn left. Your next reply is your last turn: '
+                                       'it must contain a valid submit().')
+            self.assertIn('got 9 numbers', agent.seen[2][-1][1])
+
+    def test_mixed_reply_counts_and_turn_limit_ends_episode(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep, turns = episode('reasoned', tmp), []
+            agent = self.recorder([[{'name': 'tools', 'args': {'code': 'print(1)'}}],
+                                   [{'name': 'tools', 'args': {'code': 'print(2)'}}, {'name': 'submit', 'args': BIAS}],
+                                   [{'name': 'end_tools', 'args': {}}], [{'name': 'submit', 'args': BIAS}]])
+            run_episode(agent, ep, max_turns=2, on_turn=lambda t, c: turns.append((t, c)))
+            self.assertEqual(turns, [(1, True), (2, True)])
+            self.assertIsNone(ep.submission)
+            self.assertIn('call end_tools() before submit() in that same reply', agent.seen[1][-1][1])
+
+    def test_prompts_state_turns_phase2_reasoning_and_limits(self):
+        start = initial_weights(10)
+        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, pool=10, max_turns=10,
+                             format_retries=3)
+        self.assertIn('You have 10 turns. A turn is one reply of yours', prompt)
+        self.assertIn('at most 3 such replies', prompt)
+        self.assertIn('reasoning in your own context', system_prompt('reasoned'))
+        self.assertNotIn('reasoning in your own context', system_prompt('full'))
+        specs = {t['name']: t['description'] for t in tool_specs('reasoned', writable_names(start))}
+        self.assertTrue(specs['evaluate'].startswith('Accuracy (one number)'))
+        self.assertIn('last 10,000 characters', specs['tools'])
+        self.assertIn('evaluate() and submit() check', prompt)
+        self.assertIn('submit() check', user_prompt(TASKS['scratch-cifar10'], 'blind', start, 0, 10000))
 
 
 class EndToEndTests(unittest.TestCase):

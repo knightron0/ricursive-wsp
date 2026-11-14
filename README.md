@@ -11,10 +11,22 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 |---|---|---|
 | `data(indices)` | training images as hex pixel text (96 rows of 64 hex digits each; ≤16 per call), never labels | harness |
 | `labels(indices)` | class labels | harness |
-| `tools(code)` | stdout/stderr of Python run in the sandbox | sandbox |
+| `tools(code)` | the last 10,000 characters of stdout/stderr of Python run in the sandbox | sandbox |
 | `end_tools()` | `reasoned` only: ends phase 1 for good | harness |
-| `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only) | harness |
+| `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only); in `reasoned`, the accuracy alone | harness |
 | `submit(weights)` | validation result; a valid diff ends the episode | harness |
+
+`evaluate()` and `submit()` check the diff's format first (tensor names, number counts, finite values, the
+`--max-numbers` budget) and list every problem; a call that fails the check is logged with status `format` and
+nothing is scored or submitted.
+
+## Turns
+
+An episode has `--max-turns` turns (default 10); a turn is one model reply, which may hold several calls that run in
+order. The prompt states the limit, and the last result of every turn says how many turns are left (and, before the
+last turn, that it must contain a valid `submit()`). A reply whose calls were all format rejections does not count as
+a turn, for at most `--format-retries` replies (default 3). No valid `submit()` by the end of the last turn means no
+score.
 
 ## Modes
 
@@ -28,7 +40,7 @@ No gradients in any mode: autograd, `torch.optim` and `torch.func` transforms ar
 
 `reasoned` splits the training subset into two disjoint, class-balanced parts (`--labeled-share`, default 0.5):
 - **pool** (indices `0..P-1`): unlabeled images. The sandbox holds these, and `data()` shows them. Their labels are never returned by any call.
-- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them. Their pixels (`data()`) become visible only in phase 2.
+- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them (accuracy only). Their pixels (`data()`) become visible only in phase 2.
 
 The episode runs in two phases. Phase 1 has `tools()` and `data()` on the pool; `labels()`, `evaluate()` and
 `submit()` are refused. The agent calls `end_tools()` to enter phase 2, which is one-way: `tools()` is gone for
@@ -36,7 +48,9 @@ good, and `labels()`, `evaluate()`, `data()` and `submit()` become available. So
 reaches code: every number code computes describes a pool image, and every label, labeled image and score is
 seen only in context. This closes two exploits seen in earlier runs: precomputing a fit in code and finishing it
 once the labels arrive, and probing `evaluate()` with crafted diffs, pasting the confusion matrices into
-`tools()` and solving for class statistics.
+`tools()` and solving for class statistics. The system prompt tells the agent that phase 2 is where it learns from
+labels, by reasoning over labeled images (`data()`) and their labels in its own context. In `reasoned`,
+`evaluate()` returns only the accuracy: no confusion matrix, per-class accuracy or loss.
 
 What's checked mechanically, by the harness and by `audit.json` after each run:
 1. In `reasoned`, no `tools()` call executes after `end_tools()`, and no `labels()`, `evaluate()` or `submit()` executes before it.
