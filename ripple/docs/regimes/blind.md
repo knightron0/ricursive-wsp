@@ -46,13 +46,15 @@ Every accepted turn is scored on val and test. With no feedback, "best by split"
 final submission and the best by val. Report the final submission. Best-by-val is a post-hoc choice the agent could not
 have made.
 
-## Our results (Ripple-65B via OpenRouter, 5 runs, 3 finished)
+## Our results (Ripple-65B via OpenRouter, 5 runs)
 
 | Run | Final submission (test) | Best turn by val (test) | Size of final network |
 |---|---|---|---|
 | 1 | 16.1% | same | 122 numbers |
 | 2 | 13.7% | 15.2% | 881 |
 | 3 | 10.2% | 11.7% | 5,510 |
+| 4 | 14.7% | 15.6% | 26,730 |
+| 5 | 10.0% | 16.4% | 289 |
 
 Chance is 10%. Mid-run checks showed networks collapsing onto one or two classes: without feedback the agent cannot
 calibrate the readout biases, so one class's score dominates. A hand-written 40-number colour network (blue top means
