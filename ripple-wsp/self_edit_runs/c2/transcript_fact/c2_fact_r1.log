@@ -1,0 +1,54 @@
+[1/45] 3.91s in=1574 out=166 $0.0004 (total $0.0004) finish=tool_calls | structured run_python 12ch 6.4s `val_report()` -> [0.8s]
+[1/45] 3.91s in=1574 out=166 $0.0004 (total $0.0004) finish=tool_calls | structured run_python 216ch 6.1s `print(len(KEY_TEXTS), KEY_TEXTS)` -> [0.0s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+[2/45] 58.34s in=2082 out=1355 $0.0010 (total $0.0014) finish=tool_calls | structured run_python 263ch 5.0s `import torch, time` -> [0.0s]
+[2/45] 58.34s in=2082 out=1355 $0.0010 (total $0.0014) finish=tool_calls | structured run_python 404ch 6.2s `key_pos=[-1]*4` -> [1.1s]
+[3/45] 34.84s in=2774 out=306 $0.0007 (total $0.0022) finish=tool_calls | structured run_python 215ch 4.1s `v = fact.logit_value('Berlin','Paris', scale=1.0)` -> [0.0s]
+[3/45] 34.84s in=2774 out=306 $0.0007 (total $0.0022) finish=tool_calls | structured run_python 289ch 5.0s `lab.rollback()` -> [1.1s]
+[4/45] 4.53s in=3146 out=276 $0.0004 (total $0.0025) finish=tool_calls | structured run_python 242ch 58.9s `lab.rollback()` -> [45.0s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 2/6 in 15s
+[5/45] 14.63s in=3925 out=586 $0.0007 (total $0.0032) finish=tool_calls | structured run_python 260ch 14.5s `lab.rollback()` -> [10.1s]
+[6/45] 10.09s in=4579 out=361 $0.0011 (total $0.0043) finish=tool_calls | structured run_python 211ch 12.8s `for sc in [2.0, 5.0, 10.0, 20.0]:` -> [7.8s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 2/6 in 15s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 3/6 in 45s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 4/6 in 45s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 5/6 in 45s
+[7/45] 8.8s in=5179 out=236 $0.0012 (total $0.0055) finish=tool_calls | structured run_python 326ch 11.4s `lab.rollback()` -> [1.1s]
+[8/45] 4.5s in=5599 out=263 $0.0005 (total $0.0060) finish=tool_calls | structured run_python 659ch 9.6s `lab.rollback()` -> [1.4s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 2/6 in 15s
+[9/45] 9.27s in=6060 out=416 $0.0006 (total $0.0066) finish=stop | no tool call, reply was empty; nudged
+[10/45] 56.75s in=6089 out=1570 $0.0013 (total $0.0078) finish=tool_calls | structured run_python 422ch 8.1s `lab.rollback()` -> [5.9s]
+[11/45] 4.06s in=6720 out=192 $0.0015 (total $0.0093) finish=tool_calls | structured run_python 340ch 16.1s `for L in [52,56,58,60,62,64,66]:` -> [13.4s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 2/6 in 15s
+[12/45] 6.11s in=7285 out=238 $0.0007 (total $0.0100) finish=tool_calls | structured run_python 436ch 5.2s `import io,contextlib` -> [1.9s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+[13/45] 2.72s in=7646 out=179 $0.0005 (total $0.0105) finish=tool_calls | structured run_python 408ch 15.5s `import io,contextlib,re` -> [11.4s]
+[14/45] 6.35s in=8058 out=331 $0.0006 (total $0.0111) finish=tool_calls | structured run_python 643ch 11.3s `import io,contextlib,re` -> [7.6s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+[15/45] 7.37s in=8824 out=344 $0.0007 (total $0.0118) finish=tool_calls | structured run_python 579ch 24.8s `import io,contextlib,re` -> [19.2s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+[16/45] 4.45s in=9448 out=171 $0.0006 (total $0.0125) finish=tool_calls | structured run_python 242ch 4.1s `lab.rollback()` -> [0.0s]
+[17/45] 2.77s in=9744 out=117 $0.0006 (total $0.0130) finish=tool_calls | structured run_python 249ch 14.1s `lab.rollback()` -> [10.8s]
+[18/45] 3.81s in=10027 out=233 $0.0007 (total $0.0137) finish=tool_calls | structured run_python 308ch 24.4s `import io,contextlib,re` -> [21.5s]
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name":"GMICloud","is_byok":false}},"user_id":); retry 1/6 in 5s
+[19/45] 16.93s in=10795 out=412 $0.0009 (total $0.0146) finish=tool_calls | structured run_python 528ch 18.6s `import io,contextlib,re` -> [15.0s]
+[20/45] 4.41s in=11440 out=204 $0.0007 (total $0.0153) finish=tool_calls | structured run_python 308ch 8.2s `lab.rollback()` -> [3.7s]
+[21/45] 6.5s in=11793 out=336 $0.0008 (total $0.0161) finish=tool_calls | structured run_python 670ch 6.2s `import io,contextlib,re` -> [3.0s]
+[22/45] 5.58s in=12210 out=356 $0.0008 (total $0.0170) finish=tool_calls | structured run_python 609ch 21.1s `import io,contextlib,re` -> [18.5s]
+[23/45] 5.35s in=12814 out=396 $0.0010 (total $0.0179) finish=tool_calls | structured run_python 674ch 15.1s `import io,contextlib,re` -> [12.5s]
+[24/45] 5.76s in=13353 out=397 $0.0009 (total $0.0189) finish=tool_calls | structured run_python 717ch 17.2s `import io,contextlib,re` -> [14.5s]
+[25/45] 11.05s in=14091 out=464 $0.0010 (total $0.0199) finish=tool_calls | structured run_python 740ch 7.7s `import io,contextlib,re` -> [1.9s]
+[26/45] 7.36s in=14628 out=487 $0.0010 (total $0.0209) finish=tool_calls | structured run_python 702ch 17.9s `import io,contextlib,re` -> [13.4s]
+[27/45] 6.32s in=15394 out=534 $0.0011 (total $0.0221) finish=tool_calls | structured run_python 777ch 21.7s `import io,contextlib,re` -> [18.5s]
+    api error (bad body: {"id": "gen-1794626832-5KinusRGQ2lFwlAZFj0L", "error": {"message": "Upstream error from GMICloud: The upstream model reported an error after output ha); retry 1/6 in 5s
+[28/45] 5.12s in=16421 out=522 $0.0012 (total $0.0233) finish=tool_calls | structured run_python 725ch 19.9s `import io,contextlib,re` -> [16.3s]
+    api error (HTTP 503: {"error":{"message":"Provider returned error","code":503,"metadata":{"raw":"{\"error\":{\"message\":\"routing: framework forward exhausted: no eligibl); retry 1/6 in 5s
+    api error (HTTP 503: {"error":{"message":"Provider returned error","code":503,"metadata":{"raw":"{\"error\":{\"message\":\"routing: framework forward exhausted: no eligibl); retry 2/6 in 15s
+    api error (HTTP 503: {"error":{"message":"Provider returned error","code":503,"metadata":{"raw":"{\"error\":{\"message\":\"routing: framework forward exhausted: no eligibl); retry 3/6 in 45s
+[29/45] 6.97s in=17414 out=1093 $0.0031 (total $0.0264) finish=tool_calls | structured run_python 1775ch 14.4s `lab.rollback()` -> [10.7s]
+[30/45] 14.29s in=18742 out=1419 $0.0021 (total $0.0285) finish=stop | FINAL REPORT (3626 chars)
+done: stop=final_report api_calls=30 cost=$0.0285 tokens in/out=277854/13960 -> agent_runs/c2_fact_r1/final.md

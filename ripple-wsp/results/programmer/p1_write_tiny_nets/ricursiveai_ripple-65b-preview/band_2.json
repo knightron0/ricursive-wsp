@@ -1,0 +1,68 @@
+{
+ "id": "band_2",
+ "task": "band",
+ "prompt": "Write the weights of a neural network by hand. No training, no code execution.\n\nTarget: y = 1 if 1 <= x <= 2 else 0, for x in [-5, 5]; inputs within 0.05 of the edges 1 and 2 are not tested. Inputs: 1. Outputs: 1. Use at most 16 hidden units.\nThe network is a one-hidden-layer ReLU MLP: y = W2 @ relu(W1 @ x + b1) + b2.\nW1 has shape [hidden, n_in], b1 [hidden], W2 [n_out, hidden], b2 [n_out].\nReply with your reasoning, then finish with one JSON object with exactly the keys W1, b1, W2, b2 (nested lists of numbers).\nThe network is scored on unseen inputs; it passes if every output is within 0.05 of the target.",
+ "reply": "\nUse four ReLU hinge units. The construction is:\n\n\\(y = 10\\,\\mathrm{ReLU}(x-0.95) - 10\\,\\mathrm{ReLU}(x-1.05) - 10\\,\\mathrm{ReLU}(x-1.95) + 10\\,\\mathrm{ReLU}(x-2.05)\\)\n\nThis gives output \\(0\\) for \\(x \\le 0.95\\), rises to \\(1\\) by \\(x=1.05\\), stays at \\(1\\) through \\(x=1.95\\), then falls back to \\(0\\) by \\(x=2.05\\). The transitions occur only inside the untested \\(0.05\\) bands around the edges \\(1\\) and \\(2\\), so tested outputs are exact.\n\n{\n  \"W1\": [[1.0], [1.0], [1.0], [1.0]],\n  \"b1\": [-0.95, -1.05, -1.95, -2.05],\n  \"W2\": [[10.0, -10.0, -10.0, 10.0]],\n  \"b2\": [0.0]\n}",
+ "reasoning": "",
+ "usage": {
+  "prompt_tokens": 201,
+  "completion_tokens": 8592,
+  "total_tokens": 8793,
+  "cost": 0.0051954,
+  "is_byok": false,
+  "prompt_tokens_details": {
+   "cached_tokens": 0,
+   "cache_write_tokens": 0,
+   "audio_tokens": 0,
+   "video_tokens": 0
+  },
+  "cost_details": {
+   "upstream_inference_cost": 0.0051954,
+   "upstream_inference_prompt_cost": 4.02e-05,
+   "upstream_inference_completions_cost": 0.0051552
+  },
+  "completion_tokens_details": {
+   "reasoning_tokens": 0,
+   "image_tokens": 0,
+   "audio_tokens": 0
+  }
+ },
+ "weights": {
+  "W1": [
+   [
+    1.0
+   ],
+   [
+    1.0
+   ],
+   [
+    1.0
+   ],
+   [
+    1.0
+   ]
+  ],
+  "b1": [
+   -0.95,
+   -1.05,
+   -1.95,
+   -2.05
+  ],
+  "W2": [
+   [
+    10.0,
+    -10.0,
+    -10.0,
+    10.0
+   ]
+  ],
+  "b2": [
+   0.0
+  ]
+ },
+ "score": {
+  "max_err": 8.881784197001252e-15,
+  "frac_ok": 1.0,
+  "pass": true
+ }
+}

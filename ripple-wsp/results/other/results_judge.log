@@ -1,0 +1,4 @@
+check sanity: all 26 ok
+model: openai/gpt-6.1-sol  scores: [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]  3.6s
+pirate check: [True, True, True, False, False, False]
+usage: {'calls': 6, 'prompt_tokens': 1040, 'completion_tokens': 30, 'cost': 0.00238}  -> $0.0397 per 100 judgments (173 in / 5 out tokens each)

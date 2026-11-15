@@ -1,5 +1,7 @@
 # ricursive-wsp: weight-space programming
 
+Ripple-65B weight-space programming (hackathon experiments, results, patches, self-edit transcripts): see [`ripple-wsp/`](ripple-wsp/README.md).
+
 An agent writes the weights of a ResNet-18 as **literal numbers**. Its one answer is a diff over
 the initialized network: the tensors it wants to change, with every value. Tensors it leaves out
 keep their start values. The submitted network is scored once on held-out val (and test), which

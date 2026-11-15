@@ -1,0 +1,143 @@
+{
+ "id": "abs_1",
+ "task": "abs",
+ "prompt": "Write the weights of a neural network by hand. No training, no code execution.\n\nTarget: y = |x| for x in [-5, 5]. Inputs: 1. Outputs: 1. Use at most 16 hidden units.\nThe network is a one-hidden-layer ReLU MLP: y = W2 @ relu(W1 @ x + b1) + b2.\nW1 has shape [hidden, n_in], b1 [hidden], W2 [n_out, hidden], b2 [n_out].\nReply with your reasoning, then finish with one JSON object with exactly the keys W1, b1, W2, b2 (nested lists of numbers).\nThe network is scored on unseen inputs; it passes if every output is within 0.05 of the target.",
+ "reply": "I'll use symmetries of the relu layer. Mirrored hidden unit pairs copy that trick.\n\nFor a hidden unit h = relu(a x + c), the pair of_activations at x and at -x is either diverging or converging; adding W2-weighted copies for the mirrored partner turns those into pinpoint-accurate V segments. If both h and its mirror are zero at both x and -x the segment is flat there, which is fine.\n\nWith 8 identical mirrored pairs = 16 hidden units, that gives 8 pieces per side from -5 to 0 (16 total pairs of segments, symmetric). Each pair places a vertex at -5 + i*(5/8), i = 0..7, and contributes to y via a shared weight of 0.625, giving the target slope of 1.\n\nThe final y for any x matches |x| at all vertices; because the selected (\"-x\" flat, \"x\" active) combination is exactly the one keeping the derivative at 1 on each side, the produced piecewise-linear curve tracks the target everywhere.\n\n```json\n{\n  \"W1\": [[0.5,-1.25],[0.5,1.25],[0.5,-1.875],[0.5,1.875],[0.5,-2.5],[0.5,2.5],[0.5,-3.125],[0.5,3.125],[0.5,-3.75],[0.5,3.75],[0.5,-4.375],[0.5,4.375],[0.5,-5.0],[0.5,5.0],[-1.0,-1.75],[-1.0,-2.375]],\n  \"b1\": [-1.75,-1.75,-2.375,-2.375,-3.125,-3.125,-3.75,-3.75,-4.375,-4.375,-5.0,-5.0,-5.625,-5.625,3.75,3.125],\n  \"W2\": [[0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0.625,0,0]],\n  \"b2\": [0.0]\n}\n```",
+ "reasoning": "",
+ "usage": {
+  "prompt_tokens": 172,
+  "completion_tokens": 513,
+  "total_tokens": 685,
+  "cost": 0.0003422,
+  "is_byok": false,
+  "prompt_tokens_details": {
+   "cached_tokens": 0,
+   "cache_write_tokens": 0,
+   "audio_tokens": 0,
+   "video_tokens": 0
+  },
+  "cost_details": {
+   "upstream_inference_cost": 0.0003422,
+   "upstream_inference_prompt_cost": 3.44e-05,
+   "upstream_inference_completions_cost": 0.0003078
+  },
+  "completion_tokens_details": {
+   "reasoning_tokens": 0,
+   "image_tokens": 0,
+   "audio_tokens": 0
+  }
+ },
+ "weights": {
+  "W1": [
+   [
+    0.5,
+    -1.25
+   ],
+   [
+    0.5,
+    1.25
+   ],
+   [
+    0.5,
+    -1.875
+   ],
+   [
+    0.5,
+    1.875
+   ],
+   [
+    0.5,
+    -2.5
+   ],
+   [
+    0.5,
+    2.5
+   ],
+   [
+    0.5,
+    -3.125
+   ],
+   [
+    0.5,
+    3.125
+   ],
+   [
+    0.5,
+    -3.75
+   ],
+   [
+    0.5,
+    3.75
+   ],
+   [
+    0.5,
+    -4.375
+   ],
+   [
+    0.5,
+    4.375
+   ],
+   [
+    0.5,
+    -5.0
+   ],
+   [
+    0.5,
+    5.0
+   ],
+   [
+    -1.0,
+    -1.75
+   ],
+   [
+    -1.0,
+    -2.375
+   ]
+  ],
+  "b1": [
+   -1.75,
+   -1.75,
+   -2.375,
+   -2.375,
+   -3.125,
+   -3.125,
+   -3.75,
+   -3.75,
+   -4.375,
+   -4.375,
+   -5.0,
+   -5.0,
+   -5.625,
+   -5.625,
+   3.75,
+   3.125
+  ],
+  "W2": [
+   [
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0.625,
+    0,
+    0
+   ]
+  ],
+  "b2": [
+   0.0
+  ]
+ },
+ "score": {
+  "error": "ValueError('matmul: Input operand 1 has a mismatch in its core dimension 0, with gufunc signature (n?,k),(k,m?)->(n?,m?) (size 2 is different from 1)')",
+  "pass": false
+ }
+}

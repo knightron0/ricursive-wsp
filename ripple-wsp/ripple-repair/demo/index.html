@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ripple Repair</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#f6f5f1; --card:#fff; --ink:#1c1b19; --mute:#6d6a63; --line:#e2dfd7;
+          --intact:#2a7de1; --dist:#d9482b; --rep:#1f9d63; --goal:#b8860b; --accent:#3b2f8f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 22px 6px; display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; letter-spacing:-.01em; }
+  header .sub { color:var(--mute); }
+  .badge { font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; border:1px solid var(--line); background:#fff; }
+  .badge.rec { background:#fff3cd; border-color:#e0b93a; color:#6b4e00; }
+  .badge.live { background:#e2f5ea; border-color:#7cc79d; color:#14603c; }
+  main { display:grid; grid-template-columns:minmax(380px, 600px) minmax(380px, 1fr); gap:16px; padding:10px 22px 24px; align-items:start; }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin:0 0 10px; }
+  canvas { width:100%; aspect-ratio:1; display:block; border-radius:6px; background:#fbfaf7; border:1px solid var(--line); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .legend { margin:10px 0 2px; display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+  .lg { border:1px solid var(--line); border-radius:8px; padding:7px 9px; }
+  .lg b { display:flex; align-items:center; gap:6px; font-size:13px; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .lg span.st { color:var(--mute); font-size:12px; font-variant-numeric:tabular-nums; }
+  button { font:inherit; padding:7px 13px; border-radius:7px; border:1px solid #c9c5ba; background:#fff; cursor:pointer; }
+  button:hover:not(:disabled) { background:#f1efe9; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.primary:hover:not(:disabled) { background:#2e2473; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input[type=range] { flex:1; min-width:140px; accent-color:var(--dist); }
+  select { font:inherit; padding:5px 7px; border-radius:6px; border:1px solid #c9c5ba; background:#fff; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th, td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  th { font-size:12px; color:var(--mute); font-weight:600; }
+  #log { max-height:430px; overflow:auto; font-size:13px; }
+  .ev { padding:7px 0; border-bottom:1px dashed var(--line); }
+  .ev .meta { color:var(--mute); font-size:11px; font-variant-numeric:tabular-nums; }
+  .ev.patch { border-left:3px solid var(--accent); padding-left:9px; }
+  .ev.eval { border-left:3px solid var(--rep); padding-left:9px; }
+  .ev.eval.bad { border-left-color:var(--dist); }
+  .ev.harness { color:#7a5b00; }
+  .ev pre { margin:4px 0 0; white-space:pre-wrap; word-break:break-word; font:12px/1.4 ui-monospace, Menlo, monospace; background:#f6f5f1; padding:6px 8px; border-radius:6px; }
+  .note { color:var(--mute); font-size:12px; margin-top:8px; }
+  #timer { font-variant-numeric:tabular-nums; font-weight:600; min-width:120px; }
+  #banner { display:none; margin:0 22px; padding:8px 12px; border-radius:8px; background:#fff3cd; border:1px solid #e0b93a; color:#6b4e00; font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ripple Repair</h1>
+  <span class="sub">An LLM repairs a rover's 386-parameter neural controller by editing its weights. No gradients.</span>
+  <span id="mode" class="badge">connecting…</span>
+</header>
+<div id="banner"></div>
+<main>
+  <section>
+    <div class="card">
+      <h2>Same start state, three controllers/environments</h2>
+      <canvas id="cv" width="1120" height="1120"></canvas>
+      <div class="legend">
+        <div class="lg"><b><i class="dot" style="background:var(--intact)"></i>Intact</b><span class="st" id="st-intact">–</span></div>
+        <div class="lg"><b><i class="dot" style="background:var(--dist)"></i>Damaged</b><span class="st" id="st-disturbed">–</span></div>
+        <div class="lg"><b><i class="dot" style="background:var(--rep)"></i>Repaired</b><span class="st" id="st-repaired">no patch</span></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="play">Replay</button>
+        <button id="next">New start state</button>
+        <span id="timer">t = 0.00 s</span>
+        <span class="note" style="margin:0">Deadline <span id="deadline">7</span> s. Goal ring = success radius.</span>
+      </div>
+      <div class="note">Every wheel command in this picture is produced by the small network (original weights, or original + patch),
+        simulated by <code>sim.py</code>. Ripple is only called when you press “Diagnose and repair”.</div>
+    </div>
+  </section>
+  <section style="display:grid; gap:16px">
+    <div class="card">
+      <h2>Motor damage</h2>
+      <div class="row">
+        <select id="side"><option value="left">Left motor</option><option value="right">Right motor</option></select>
+        <input id="dmg" type="range" min="0" max="70" step="5" value="50">
+        <b id="dmgv" style="min-width:150px">50% weaker (gain 0.50)</b>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="repair" class="primary">Diagnose and repair</button>
+        <button id="undo" disabled>Undo patch</button>
+        <button id="recorded">Load recorded run</button>
+        <span id="jobst" class="note" style="margin:0"></span>
+      </div>
+      <div class="note">The slider value goes to the simulator only. Ripple is told that “an actuator or sensor property has changed”, not which or how much.
+        Changing the slider drops the current patch: a new setting needs a new repair.</div>
+    </div>
+    <div class="card">
+      <h2>Scoreboard <span id="sbn" style="text-transform:none; letter-spacing:0"></span></h2>
+      <table>
+        <thead><tr><th>Controller, environment</th><th>Success</th><th>Mean time (s)</th><th>Final dist (m)</th></tr></thead>
+        <tbody id="sb"></tbody>
+      </table>
+      <div class="note" id="patchinfo"></div>
+    </div>
+    <div class="card">
+      <h2>Ripple's hypotheses and edits <span id="logsrc" class="badge" style="display:none"></span></h2>
+      <div id="log"><div class="note">No repair yet.</div></div>
+    </div>
+  </section>
+</main>
+<script src="recorded/recorded.js" onerror="void 0"></script>
+<script>
+const $ = id => document.getElementById(id);
+const COL = {intact:'#2a7de1', disturbed:'#d9482b', repaired:'#1f9d63'};
+let lastEvals = 0, LIVE = false, PB = null, seed = 7000, t0 = null, playing = false, recIdx = 0, pollTimer = null, logSource = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  return r.json();
+}
+function setting() { return {side:$('side').value, gain: +(1 - $('dmg').value/100).toFixed(3)}; }
+function showDmg() { const s = setting(); $('dmgv').textContent = `${$('dmg').value}% weaker (gain ${s.gain.toFixed(2)})`; }
+
+// ---------------------------------------------------------------- drawing
+const cv = $('cv'), cx = cv.getContext('2d'), W = cv.width, VIEW = 3.5;
+const px = (x) => W/2 + x/VIEW*W/2, py = (y) => W/2 - y/VIEW*W/2, sc = W/2/VIEW;
+function rowAt(tr, t) { const dt = PB.config.dt; let k = Math.min(tr.rows.length-1, Math.floor(t/dt + 1e-9)); return tr.rows[k]; }
+function draw(t) {
+  cx.clearRect(0,0,W,W);
+  cx.strokeStyle = '#ece9e1'; cx.lineWidth = 1;
+  for (let m=-3; m<=3; m++) { cx.beginPath(); cx.moveTo(px(m),0); cx.lineTo(px(m),W); cx.stroke(); cx.beginPath(); cx.moveTo(0,py(m)); cx.lineTo(W,py(m)); cx.stroke(); }
+  cx.fillStyle = '#b4b0a6'; cx.font = '20px sans-serif'; cx.fillText('1 m grid', 14, W-14);
+  if (!PB) return;
+  const g = PB.episode;
+  cx.beginPath(); cx.arc(px(g.gx), py(g.gy), PB.config.success_radius*sc, 0, 7); cx.fillStyle = 'rgba(184,134,11,.18)'; cx.fill();
+  cx.strokeStyle = '#b8860b'; cx.lineWidth = 3; cx.stroke();
+  cx.beginPath(); cx.arc(px(g.gx), py(g.gy), 5, 0, 7); cx.fillStyle = '#b8860b'; cx.fill();
+  for (const name of ['intact','disturbed','repaired']) {
+    const tr = PB[name]; if (!tr) continue;
+    const dt = PB.config.dt, kmax = Math.min(tr.rows.length-1, Math.floor(t/dt + 1e-9));
+    cx.beginPath(); cx.strokeStyle = COL[name]; cx.lineWidth = 4; cx.globalAlpha = .85;
+    for (let k=0; k<=kmax; k++) { const r = tr.rows[k]; k ? cx.lineTo(px(r[1]), py(r[2])) : cx.moveTo(px(r[1]), py(r[2])); }
+    cx.stroke(); cx.globalAlpha = 1;
+    const r = tr.rows[kmax]; rover(r[1], r[2], r[3], COL[name]);
+    const done = kmax >= tr.rows.length-1;
+    $('st-'+name).textContent = !done ? 'driving…' : tr.success ? `reached in ${tr.time.toFixed(2)} s` : `timed out, ${tr.final_dist.toFixed(2)} m short`;
+  }
+  if (!PB.repaired) $('st-repaired').textContent = 'no patch';
+  $('timer').textContent = `t = ${Math.min(t, PB.config.duration).toFixed(2)} s`;
+}
+function rover(x, y, th, color) {
+  cx.save(); cx.translate(px(x), py(y)); cx.rotate(-th);
+  const L = .30*sc, Wd = .40*sc;
+  cx.fillStyle = '#2b2a27'; cx.fillRect(-L*.35, -Wd/2-6, L*.7, 10); cx.fillRect(-L*.35, Wd/2-4, L*.7, 10);
+  cx.fillStyle = color; cx.beginPath();
+  cx.moveTo(L/2+10, 0); cx.lineTo(L/4, -Wd/2+4); cx.lineTo(-L/2, -Wd/2+4); cx.lineTo(-L/2, Wd/2-4); cx.lineTo(L/4, Wd/2-4); cx.closePath(); cx.fill();
+  cx.strokeStyle = '#fff'; cx.lineWidth = 2; cx.stroke();
+  cx.restore();
+}
+function frame(ts) {
+  if (!playing) return;
+  if (t0 === null) t0 = ts;
+  const t = (ts - t0)/1000 * 1.5;      // 1.5x real time
+  draw(t);
+  if (t < PB.config.duration + .2) requestAnimationFrame(frame); else playing = false;
+}
+function play() {
+  if (!PB) return;
+  if (location.search.includes('static')) return draw(PB.config.duration + 1);   // ?static: final frame, for screenshots
+  t0 = null; if (!playing) { playing = true; requestAnimationFrame(frame); }
+}
+
+// ---------------------------------------------------------------- scoreboard and log
+function pct(x) { return (100*x).toFixed(0) + '%'; }
+function scoreboard(sb, patch) {
+  const rows = [['Original, intact rover', sb.intact], ['Original, damaged rover', sb.disturbed],
+                ['Patched, damaged rover', sb.repaired], ['Patched, intact rover', sb.repaired_in_intact_env]];
+  $('sb').innerHTML = rows.map(([n, s]) => s ? `<tr><td>${n}</td><td>${pct(s.success_rate)}</td><td>${s.mean_capped_time.toFixed(2)}</td><td>${s.mean_final_dist.toFixed(3)}</td></tr>`
+                                             : `<tr><td>${n}</td><td colspan="3" style="color:var(--mute)">no patch for this setting</td></tr>`).join('');
+  $('sbn').textContent = `· ${sb.intact.episodes} demo episodes (not the held-out set)`;
+  $('patchinfo').innerHTML = patch ? `Active patch: <b>${patch.source === 'recorded' ? 'RECORDED' : 'live'}</b> candidate ${patch.candidate ?? ''}, ${patch.changed_parameters} of 386 parameters changed, L2 norm ${patch.patch_l2_norm.toFixed(3)}.` : 'Active controller: original checkpoint (no patch).';
+  $('undo').disabled = !patch || !LIVE;
+}
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function editStr(e) {
+  const sel = e.index != null ? `[${e.index}]` : e.row != null ? `row ${e.row}` : e.col != null ? `col ${e.col}` : 'all';
+  let v = JSON.stringify(e.value); if (v.length > 90) v = v.slice(0, 90) + '…';
+  return `${e.tensor} ${sel}: ${e.op} ${v}`;
+}
+function renderLog(events, source) {
+  const out = [];
+  for (const e of events) {
+    const meta = `<div class="meta">${e.elapsed_s ?? ''} s · $${(e.cost_usd ?? 0).toFixed(4)}</div>`;
+    if (e.kind === 'start') out.push(`<div class="ev">${meta}Repair started. Original controller on 20 dev episodes: ${pct(e.original_dev.success_rate)} success, ${e.original_dev.mean_capped_time} s.</div>`);
+    else if (e.kind === 'ripple_says') out.push(`<div class="ev">${meta}<b>Ripple:</b> ${esc(e.text)}</div>`);
+    else if (e.kind === 'tool') out.push(`<div class="ev">${meta}<span style="color:var(--mute)">tool</span> ${esc(e.name)}(${esc(JSON.stringify(e.args ?? {}))})${e.error ? ' → ' + esc(e.error) : ''}</div>`);
+    else if (e.kind === 'patch_submitted') out.push(`<div class="ev patch">${meta}<b>Patch submitted</b>${e.accepted ? ` (${e.changed_parameters} parameters)` : ' — REJECTED: ' + esc(e.error)}<br><i>${esc(e.explanation)}</i><pre>${(e.edits || []).map(editStr).map(esc).join('\n')}</pre></div>`);
+    else if (e.kind === 'candidate_evaluated') out.push(`<div class="ev eval ${e.is_best ? '' : 'bad'}">${meta}<b>Candidate ${e.candidate}</b>: ${pct(e.success_rate)} success, ${e.mean_capped_time} s mean time${e.is_best ? ' — best so far' : ''} (${e.evaluations_left} evaluations left)</div>`);
+    else if (e.kind === 'harness_rejected_report' || e.kind === 'harness_nudge') out.push(`<div class="ev harness">${meta}Harness: ${esc(e.reason)}</div>`);
+    else if (e.kind === 'end') out.push(`<div class="ev">${meta}<b>Finished</b> (${esc(e.stop)}): ${e.evaluations} candidates evaluated; ${e.best_beats_original_on_dev ? 'best patch beats the original on dev and is now active' : 'no candidate beat the original — no patch applied'}.${e.final_report ? '<pre>' + esc(e.final_report) + '</pre>' : ''}</div>`);
+    else if (e.kind === 'error') out.push(`<div class="ev harness">Error: ${esc(e.text)}</div>`);
+  }
+  $('log').innerHTML = out.join('') || '<div class="note">No repair yet.</div>';
+  $('log').scrollTop = $('log').scrollHeight;
+  const b = $('logsrc');
+  if (source) { b.style.display = ''; b.textContent = source === 'recorded' ? 'RECORDED' : 'LIVE'; b.className = 'badge ' + (source === 'recorded' ? 'rec' : 'live'); }
+  else b.style.display = 'none';
+}
+
+// ---------------------------------------------------------------- live mode
+async function refresh(autoplay = true) {
+  if (!LIVE) return;
+  PB = await api('/api/playback', {...setting(), seed});
+  scoreboard(PB.scoreboard, PB.patch);
+  if (!PB.patch && logSource === 'recorded') { renderLog([], null); logSource = null; banner(''); }
+  if (PB.patch && PB.patch.source === 'recorded' && logSource !== 'recorded') {   // e.g. page reloaded while the recorded patch is active
+    const r = await api('/api/recorded', {});
+    logSource = 'recorded'; renderLog(r.events, 'recorded');
+    banner(`RECORDED run from ${r.recorded_at} (${r.run}): the log and patch below were recorded earlier. Not a live result.`);
+  }
+  if (PB.patch && PB.patch.source === 'live' && logSource !== 'live') {
+    const s = await api('/api/repair/status');
+    if (s.job) { logSource = 'live'; renderLog(s.events, 'live'); }
+  }
+  if (autoplay) play(); else draw(PB.config.duration);
+}
+function banner(text) { $('banner').style.display = text ? 'block' : 'none'; $('banner').textContent = text; }
+async function poll() {
+  const s = await api('/api/repair/status');
+  if (!s.job) return;
+  logSource = 'live'; renderLog(s.events, 'live');
+  const evals = s.events.filter(e => e.kind === 'candidate_evaluated').length;
+  $('jobst').textContent = s.done ? '' : `Ripple is working… ${evals}/10 candidates evaluated`;
+  if (s.done) { clearInterval(pollTimer); pollTimer = null; $('repair').disabled = false; await refresh(); }
+  else if (evals !== lastEvals) { lastEvals = evals; await refresh(); }   // show the best-so-far patch
+}
+async function init() {
+  showDmg();
+  try {
+    const info = await api('/api/info');
+    LIVE = true;
+    $('mode').textContent = info.api_key ? 'LIVE · Ripple API ready' : 'LIVE simulator · no API key (repair disabled)';
+    $('mode').className = 'badge live';
+    $('repair').disabled = !info.api_key;
+    $('recorded').disabled = !info.recorded;
+    $('deadline').textContent = info.config.duration;
+    if (info.active_setting) {      // a patch or a running repair exists on the server: show its setting instead of dropping it
+      $('side').value = info.active_setting.side; $('dmg').value = Math.round((1 - info.active_setting.gain)*100); showDmg();
+    }
+    await refresh();
+    const s = await api('/api/repair/status');
+    if (s.job && !s.done) { $('repair').disabled = true; pollTimer = setInterval(poll, 1500); }
+  } catch (e) { recordedOnly(); }
+}
+function recordedOnly() {
+  const R = window.RECORDED;
+  $('mode').textContent = 'RECORDED playback (no server)'; $('mode').className = 'badge rec';
+  for (const id of ['repair', 'undo', 'dmg', 'side', 'recorded']) $(id).disabled = true;
+  if (!R) { banner('No server and no recorded run found. Start it with: python3 demo/server.py'); return; }
+  banner(`RECORDED run from ${R.recorded_at} (${R.run}). Not a live result. For live repair run: python3 demo/server.py`);
+  $('side').value = R.setting.side; $('dmg').value = Math.round((1 - R.setting.gain)*100); showDmg();
+  const show = () => { PB = R.playbacks[recIdx % R.playbacks.length]; scoreboard(R.scoreboard, R.patch_info); play(); };
+  $('next').onclick = () => { recIdx++; show(); };
+  logSource = 'recorded'; renderLog(R.events, 'recorded'); show();
+}
+$('play').onclick = play;
+$('next').onclick = () => { seed++; refresh(); };
+$('dmg').oninput = showDmg;
+$('dmg').onchange = () => refresh();
+$('side').onchange = () => refresh();
+$('undo').onclick = async () => { await api('/api/undo', {}); banner(''); await refresh(); };
+$('repair').onclick = async () => {
+  const r = await api('/api/repair', setting());
+  if (r.error) { $('jobst').textContent = r.error; return; }
+  banner(''); lastEvals = 0; $('repair').disabled = true; $('jobst').textContent = 'Ripple is working…';
+  renderLog([], 'live'); await refresh(false);
+  pollTimer = setInterval(poll, 1500);
+};
+$('recorded').onclick = async () => {
+  const r = await api('/api/recorded', {});
+  if (r.error) { $('jobst').textContent = r.error; return; }
+  $('side').value = r.setting.side; $('dmg').value = Math.round((1 - r.setting.gain)*100); showDmg();
+  logSource = 'recorded'; renderLog(r.events, 'recorded');
+  banner(`RECORDED run from ${r.recorded_at} (${r.run}): the log and patch below were recorded earlier. Not a live result.`);
+  await refresh();
+};
+init();
+</script>
+</body>
+</html>

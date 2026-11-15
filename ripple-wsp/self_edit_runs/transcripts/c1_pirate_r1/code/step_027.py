@@ -1,0 +1,5 @@
+print("base_replies", type(base_replies), len(base_replies) if hasattr(base_replies,'__len__') else None)
+print("prompted_replies", type(prompted_replies), len(prompted_replies) if hasattr(prompted_replies,'__len__') else None)
+def ck(reply): return bool(eval(P['pirate']['check'], {"reply": reply}))
+print("base rate", sum(ck(r) for r in base_replies)/len(base_replies))
+print("prompted rate", sum(ck(r) for r in prompted_replies)/len(prompted_replies))

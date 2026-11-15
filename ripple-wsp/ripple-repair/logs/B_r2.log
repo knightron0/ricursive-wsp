@@ -1,0 +1,10 @@
+[   0.0s $0.0000] start: {"original_dev": {"success_rate": 0.8, "mean_capped_time": 5.345, "mean_final_distance": 0.181}}
+[   2.8s $0.0002] ripple_says: {"text": "I'll start by examining the controller weights and trajectories from the changed environment.", "tool_call_form": "structured"}
+[   2.8s $0.0002] tool: {"name": "inspect_weights", "args": {"which": "original"}, "error": null}
+[   2.8s $0.0002] tool: {"name": "get_trajectory", "args": {"episode_id": 0, "max_rows": 60, "stride": 2}, "error": null}
+[   2.8s $0.0002] tool: {"name": "get_trajectory", "args": {"episode_id": 1, "max_rows": 60, "stride": 2}, "error": null}
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 2/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 3/41

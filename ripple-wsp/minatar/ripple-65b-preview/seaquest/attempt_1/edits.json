@@ -1,0 +1,30 @@
+{
+ "block": true,
+ "statements": 42,
+ "applied": 41,
+ "entries_written": 400,
+ "errors": [
+  {
+   "statement": "W1[18:600:60, 31] = [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,",
+   "error": "SyntaxError: '[' was never closed (<unknown>, line 1)"
+  }
+ ],
+ "cut_off": true,
+ "nonzero": {
+  "W1": 400,
+  "b1": 0,
+  "W2": 0,
+  "b2": 0,
+  "W3": 0,
+  "b3": 0
+ },
+ "nonzero_total": 400,
+ "max_abs": {
+  "W1": 4.5,
+  "b1": 0.0,
+  "W2": 0.0,
+  "b2": 0.0,
+  "W3": 0.0,
+  "b3": 0.0
+ }
+}
