@@ -8,13 +8,12 @@
 
 reasoned mode splits the training subset into a pool (indices 0..pool-1) and a labeled set
 (pool..N-1), and enforces:
-  1. labels() and evaluate() both depend on labels: once either has executed (the lock), tools()
-     never executes again;
+  1. once labels() has executed (the lock), tools() never executes again;
   2. the sandbox holds only pool images; pool labels are never returned by any call;
   3. labels() covers only the labeled set, and its images (data()) are visible only after the lock;
-  4. evaluate() scores on the labeled set.
-So nothing derived from a label ever reaches code, and no number computed by code describes an
-image whose label the agent sees.
+  4. evaluate() scores on the labeled set and returns accuracy only (one number); it may be called
+     at any time and does not lock. That one number per call is the only label-derived signal that
+     can reach code.
 """
 import json
 import os
@@ -31,7 +30,7 @@ MODES = ('blind', 'reasoned', 'full')
 ALLOWED = {'blind': {'tools', 'submit'},
            'reasoned': {'data', 'labels', 'tools', 'evaluate', 'submit'},
            'full': {'data', 'labels', 'tools', 'evaluate', 'submit'}}
-LABEL_CALLS = {'labels', 'evaluate'}  # reasoned: the first one executed locks tools()
+LABEL_CALLS = {'labels'}  # reasoned: the first one executed locks tools()
 MAX_IMAGES_PER_CALL = 16
 MAX_OUTPUT_CHARS = 10000
 
@@ -62,7 +61,7 @@ class Episode:
         if name not in ALLOWED[self.mode]:
             text, error = f'{name}() is not available in {self.mode} mode', True
         elif name == 'tools' and self.locked:
-            text, error = 'tools() is permanently disabled: labels() or evaluate() has been called', True
+            text, error = 'tools() is permanently disabled: labels() has been called', True
         else:
             try:
                 text, error = getattr(self, f'_{name}')(args), False
@@ -85,7 +84,7 @@ class Episode:
         if len(idx) > MAX_IMAGES_PER_CALL:
             raise ValueError(f'at most {MAX_IMAGES_PER_CALL} images per call')
         if self.pool and not self.locked and any(i >= self.pool for i in idx):
-            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only after labels() or evaluate()')
+            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only after labels()')
         return '\n\n'.join(f'image {i}:\n{pixels_text(self.images[i])}' for i in idx)
 
     def _labels(self, args):
@@ -109,6 +108,8 @@ class Episode:
     def _evaluate(self, args):
         weights, _ = self.apply_diff(self.start, args['weights'])
         m = evaluate(weights, (self.images[self.pool:], self.labels[self.pool:]), self.classes, self.device)
+        if self.mode == 'reasoned':  # one number: no per-class accuracy, confusion or loss to probe
+            return json.dumps({'accuracy': round(m['accuracy'], 4)})
         m.pop('activations', None)
         return json.dumps(m)
 
@@ -139,7 +140,7 @@ def audit(mode, log, transcript_blocks=(), pool=0):
         if e['executed'] and e['call'] not in ALLOWED[mode]:
             problems.append(f'call {i}: {e["call"]} executed in {mode} mode')
         if mode == 'reasoned' and e['executed'] and e['call'] == 'tools' and locked:
-            problems.append(f'call {i}: tools executed after labels/evaluate')
+            problems.append(f'call {i}: tools executed after labels')
         locked |= e['executed'] and e['call'] in LABEL_CALLS
     for t in transcript_blocks:
         if t in ('image', 'document'):

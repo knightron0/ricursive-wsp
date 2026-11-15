@@ -44,7 +44,7 @@ BIAS = {'weights': [{'name': 'fc.bias', 'values': [0.0] * 10}]}
 
 
 class LockTests(unittest.TestCase):
-    """reasoned: once labels() or evaluate() has executed, tools() never executes again."""
+    """reasoned: once labels() has executed, tools() never executes again."""
 
     def test_tools_refused_after_labels_and_code_never_runs(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
@@ -64,21 +64,13 @@ class LockTests(unittest.TestCase):
             self.assertEqual([e['phase'] for e in ep.log], [1, 1, 2, 2, 2, 2])
             self.assertEqual(audit('reasoned', ep.log, pool=10), [])
 
-    def test_evaluate_locks_tools(self):
+    def test_evaluate_does_not_lock(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
-            self.assertTrue(ep.call('evaluate', {'weights': [{'name': 'fc.bias', 'values': [0.0]}]})[1])
-            self.assertFalse(ep.locked)  # a rejected diff scores nothing: no lock
             self.assertFalse(ep.call('evaluate', BIAS)[1])
-            self.assertIn('permanently disabled', ep.call('tools', {'code': 'print(1)'})[0])
-            self.assertFalse(ep.call('data', {'indices': [10]})[1])  # labeled images visible after the lock
-            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
-            self.assertIn('after labels/evaluate', audit('reasoned', [{'call': 'evaluate', 'executed': True},
-                                                                       {'call': 'tools', 'executed': True}])[0])
-        with tempfile.TemporaryDirectory() as tmp, NO_GPU:  # full mode: no lock
-            ep = episode('full', tmp)
-            self.assertFalse(ep.call('evaluate', BIAS)[1])
+            self.assertFalse(ep.locked)
             self.assertFalse(ep.call('tools', {'code': 'print(1)'})[1])
+            self.assertIn('only after labels()', ep.call('data', {'indices': [10]})[0])
 
     def test_failed_labels_call_does_not_lock(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
@@ -97,6 +89,9 @@ class LockTests(unittest.TestCase):
             self.assertEqual([(e['call'], e['executed']) for e in ep.log],
                              [('tools', True), ('labels', True), ('tools', False), ('submit', True)])
             self.assertIsNotNone(ep.submission)
+            from wsp.agent import turn_note
+            self.assertEqual(turn_note(3, 100), '[turn 3/100]')
+            self.assertIn('2 turns left', turn_note(98, 100))
 
     def test_pool_and_labeled_set_rules(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
@@ -113,11 +108,14 @@ class LockTests(unittest.TestCase):
     def test_evaluate_scores_labeled_set_only(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             m = json.loads(episode('reasoned', tmp).call('evaluate', BIAS)[0])
-            self.assertEqual(sum(m['prediction_counts'].values()), 10)
+            self.assertEqual(list(m), ['accuracy'])  # one number in reasoned
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            m = json.loads(episode('full', tmp).call('evaluate', BIAS)[0])
+            self.assertEqual(sum(m['prediction_counts'].values()), 20)
 
     def test_audit_catches_broken_lock_and_images(self):
         log = [{'call': 'labels', 'executed': True}, {'call': 'tools', 'executed': True}]
-        self.assertIn('tools executed after labels/evaluate', audit('reasoned', log)[0])
+        self.assertIn('tools executed after labels', audit('reasoned', log)[0])
         self.assertIn('pool images', audit('reasoned', [{'call': 'labels', 'executed': True, 'args': {'indices': [1]}}], pool=5)[0])
         self.assertIn('before the lock', audit('reasoned', [{'call': 'data', 'executed': True, 'args': {'indices': [7]}}], pool=5)[0])
         self.assertEqual(audit('full', log), [])

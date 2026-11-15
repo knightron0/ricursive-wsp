@@ -20,11 +20,11 @@ MODE_RULES = {
     'reasoned': 'Mode reasoned: available: data(), labels(), tools(), evaluate(), submit(). The training subset '
                 'has two disjoint parts. The POOL: unlabeled images; the sandbox behind tools() holds them '
                 '(`data` = {"images", "classes"}) and data() shows them; their labels are never available. The '
-                'LABELED SET: labels() gives their labels, and evaluate() scores a diff on them. Both depend on '
-                'labels, so IMPORTANT: your first labels() or evaluate() call permanently disables tools() for the '
-                'rest of the episode; after that you may call labels(), evaluate() and data() as often as you like, '
-                'and data() also shows labeled-set images. Do all the code work you need first, then stop using '
-                'tools(). No gradients in any mode.',
+                'LABELED SET: labels() gives their labels, and data() shows their images only after your first labels() '
+                'call. evaluate() returns a diff\'s accuracy on the labeled set (one number) and may be used at any '
+                'time. IMPORTANT: the first labels() call permanently disables tools() for the rest of the episode. '
+                'Do all the code work you need first, then stop using tools() and call labels(). No gradients in '
+                'any mode.',
     'full': 'Mode full: available: data(), labels(), tools(), evaluate(), submit(). In tools() code, `data` = '
             '{"images", "labels", "classes"}. No gradients in any mode (autograd and torch.optim are disabled).',
 }
@@ -36,8 +36,8 @@ CALL_DOCS = {
     'tools': 'Run Python in a sandbox (fresh process; files in the working directory persist across calls). '
              'Preloaded: torch, math, toolkit, `data`, `start` (start state_dict). No network, no subprocesses, '
              'no files outside the working directory. Returns the end of stdout/stderr.\n' + TOOLKIT_DOC,
-    'evaluate': 'Accuracy, loss, per-class accuracy and confusion of a candidate diff on the training subset '
-                '(the labeled set in reasoned mode).',
+    'evaluate': 'Accuracy of a candidate diff on the training subset. In reasoned mode: accuracy on the labeled set '
+                'only, one number. Otherwise also loss, per-class accuracy and the top confusions.',
     'submit': 'Submit the final diff. Ends the episode if it is valid; otherwise you are told why.',
 }
 
@@ -57,7 +57,7 @@ def tool_specs(mode, names):
             for n in ('data', 'labels', 'tools', 'evaluate', 'submit') if n in ALLOWED[mode]]
 
 
-def user_prompt(task, mode, start, n_examples, max_numbers, pool=0):
+def user_prompt(task, mode, start, n_examples, max_numbers, pool=0, max_turns=100):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
     return '\n\n'.join([
         f'# Task: {task.name}\n{task.description}',
@@ -69,5 +69,6 @@ def user_prompt(task, mode, start, n_examples, max_numbers, pool=0):
          f'{pool}..{n_examples - 1} ({n_examples - pool} images). Each part is class-balanced and not in class order.'
          if pool else f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in '
                        f'class order).') if n_examples else '# Training subset\nnone',
-        f'# Budget\nThe diff may hold at most {max_numbers:,} numbers in total.',
+        f'# Budget\nThe diff may hold at most {max_numbers:,} numbers in total. You have {max_turns} turns (replies); '
+        f'each call result shows the turn count. If you have not submitted by the last turn, you get nothing.',
     ])

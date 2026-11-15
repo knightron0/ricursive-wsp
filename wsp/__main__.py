@@ -46,7 +46,7 @@ def parse_args(argv=None):
     p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), anthropic/claude-opus-5.5 (openrouter)')
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
     p.add_argument('--max-tokens', type=int, default=64000, help='Per model turn')
-    p.add_argument('--max-turns', type=int, default=40)
+    p.add_argument('--max-turns', type=int, default=100, help='Model replies per episode (shown to the model)')
     p.add_argument('--max-numbers', type=int, default=20000, help='Most numbers a diff may hold')
     p.add_argument('--tool-timeout', type=float, default=300)
     p.add_argument('--script', type=Path, help='Replay scripted calls instead of calling the API')
@@ -97,7 +97,7 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=False)
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist(), 'pool': pool})
-    prompt, tools = user_prompt(task, a.mode, start, len(subset), a.max_numbers, pool), tool_specs(a.mode, writable_names(start))
+    prompt, tools = user_prompt(task, a.mode, start, len(subset), a.max_numbers, pool, a.max_turns), tool_specs(a.mode, writable_names(start))
     save(out / 'prompt.json', {'system': SYSTEM, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
     if a.dry_run:

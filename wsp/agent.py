@@ -195,12 +195,18 @@ class ScriptedAgent:
         return ['text']
 
 
-def run_episode(agent, episode, max_turns=40, on_turn=None):
+def turn_note(turn, max_turns):
+    left = max_turns - turn
+    note = f'[turn {turn}/{max_turns}]'
+    return note + (f' Only {left} turn{"s" if left != 1 else ""} left: submit() soon.' if left <= 5 else '')
+
+
+def run_episode(agent, episode, max_turns=100, on_turn=None):
     results = None
     for turn in range(1, max_turns + 1):
         calls = agent.next(results)
         if not calls:
-            results = 'Call submit() with your diff to finish.'
+            results = f'Call submit() with your diff to finish. {turn_note(turn, max_turns)}'
             if isinstance(agent, ScriptedAgent) and not agent.turns:
                 return
             continue
@@ -210,6 +216,9 @@ def run_episode(agent, episode, max_turns=40, on_turn=None):
             results.append((call_id, text, error))
             if episode.submission is not None:
                 break
+        if results:
+            call_id, text, error = results[-1]
+            results[-1] = (call_id, f'{text}\n\n{turn_note(turn, max_turns)}', error)
         if on_turn:
             on_turn(turn)
         if episode.submission is not None:

@@ -14,7 +14,7 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 | `data(indices)` | training images as hex pixel text (96 rows of 64 hex digits each; ≤16 per call), never labels | harness |
 | `labels(indices)` | class labels | harness |
 | `tools(code)` | stdout/stderr of Python run in the sandbox | sandbox |
-| `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only) | harness |
+| `evaluate(weights)` | accuracy of a diff on the training subset; outside `reasoned` also loss, per-class accuracy and confusion | harness |
 | `submit(weights)` | validation result; a valid diff ends the episode | harness |
 
 ## Modes
@@ -22,24 +22,22 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 | Mode | Calls | What sandbox code can read |
 |---|---|---|
 | `blind` | `tools`, `submit` | no data |
-| `reasoned` | all five, but **the first `labels()` or `evaluate()` permanently disables `tools()`** | pool images only |
+| `reasoned` | all five, but **the first `labels()` permanently disables `tools()`**; `evaluate()` returns accuracy only | pool images only |
 | `full` | all five | training images and labels |
 
 No gradients in any mode: autograd, `torch.optim` and `torch.func` transforms are disabled in the sandbox.
 
 `reasoned` splits the training subset into two disjoint, class-balanced parts (`--labeled-share`, default 0.5):
 - **pool** (indices `0..P-1`): unlabeled images. The sandbox holds these, and `data()` shows them. Their labels are never returned by any call.
-- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them. Their pixels (`data()`) become visible only after the lock.
+- **labeled set** (indices `P..N-1`): `labels()` covers only these. Their pixels (`data()`) become visible only after the first `labels()`, i.e. once `tools()` is gone. `evaluate()` scores on this set at any time and returns accuracy only: one number, no loss, per-class accuracy or confusion.
 
-`labels()` and `evaluate()` both carry label information, so whichever executes first is the lock: `tools()` is
-gone for good, while `labels()`, `evaluate()` and `data()` stay available. So nothing derived from a label ever
-reaches code: every number code computes describes a pool image, and every label, labeled image and score is
-seen only in context. This closes two exploits seen in earlier runs: precomputing a fit in code and finishing it
-once the labels arrive, and probing `evaluate()` with crafted diffs, pasting the confusion matrices into
-`tools()` and solving for class statistics.
+So every number code computes describes a pool image, and the only label-derived signal that can ever reach code
+is one accuracy number per `evaluate()` call. This limits two exploits seen in earlier runs: precomputing a fit in
+code and finishing it once the labels arrive (closed by the split), and probing `evaluate()` with crafted diffs
+and solving for class statistics from the confusion matrices it used to return (now one number per probe).
 
 What's checked mechanically, by the harness and by `audit.json` after each run:
-1. In `reasoned`, no `tools()` call executes after the first executed `labels()` or `evaluate()`.
+1. In `reasoned`, no `tools()` call executes after the first executed `labels()`.
 2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image is shown before the lock.
 3. No call outside the mode's list ever executes.
 4. The sandbox's `data.pt` holds labels only in `full` (in `reasoned`, pool images only).
