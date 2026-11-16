@@ -19,7 +19,7 @@ from wsp.episode import Episode, audit, clip, pixels_text
 from wsp.evaluation import evaluate, layer_outputs
 from wsp.model import initial_weights, state_shapes
 from wsp.prompt import system_prompt, tool_specs, user_prompt
-from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
+from wsp.tasks import TASKS, apply_diff, load_start, start_weights, writable_names
 
 ROOT = Path(__file__).resolve().parent
 CLASSES = [f'c{i}' for i in range(10)]
@@ -533,6 +533,53 @@ class SDKBackendTests(unittest.TestCase):
                       'claude-sdk', '--data-dir', tmp, '--output', str(out), '--dry-run'])
             user = json.loads((out / 'prompt.json').read_text())['user']
             self.assertIn('within about 960,000 output tokens', user)
+
+
+class WarmStartTests(unittest.TestCase):
+    def test_default_task_text_unchanged(self):
+        self.assertEqual(TASKS['scratch-cifar10'].description,
+                         'Write every weight of a ResNet-18 CIFAR-10 classifier yourself. The starting weights are a '
+                         'random PyTorch initialization (BatchNorm running stats mean 0, var 1).')
+        self.assertEqual(TASKS['cifar10-to-cifar100'].description,
+                         'Turn a ResNet-18 trained on CIFAR-10 into a CIFAR-100 classifier. The starting weights are '
+                         'the trained CIFAR-10 network, except fc (now 512 -> 100) which is a random initialization. '
+                         'You may rebuild the head and edit any other weights.')
+
+    def test_load_start_checks_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'w.pt'
+            torch.save(initial_weights(100), path)
+            with self.assertRaisesRegex(ValueError, 'not a 10-class'):
+                load_start(path, 10)
+
+    def test_warm_start_run_uses_given_network_and_states_its_score(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            given = initial_weights(10, seed=3)
+            given['fc.bias'] = torch.arange(10, dtype=torch.float32)
+            torch.save(given, Path(tmp) / 'given.pt')
+            script = Path(tmp) / 'calls.json'
+            script.write_text(json.dumps([[{'name': 'tools', 'args': {'code': "print(float(start['fc.bias'][9]))"}}],
+                                          [{'name': 'end_tools', 'args': {}}],
+                                          [{'name': 'submit', 'args': {'weights': [{'name': 'bn1.bias',
+                                                                                    'values': [0.0] * 64}]}}]]))
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--script',
+                      str(script), '--data-dir', tmp, '--device', 'cpu', '--output', str(out), '--start-weights',
+                      str(Path(tmp) / 'given.pt')])
+            user = json.loads((out / 'prompt.json').read_text())['user']
+            self.assertIn('The starting weights are a network that another agent produced for this same task. That '
+                          'agent was given an identical prompt, except that its starting weights were a random PyTorch '
+                          'initialization (BatchNorm running stats mean 0, var 1). You are not told how it arrived at '
+                          'this network.', user)
+            val_start = json.loads((out / 'result.json').read_text())['val']['start']['accuracy']
+            self.assertIn(f'the start network scores {val_start:.1%} on the held-out validation images', user)
+            self.assertNotIn('about 10%, chance', user)
+            self.assertIn('9.0', json.loads((out / 'calls.json').read_text())[0]['result'])
+            submitted = torch.load(out / 'weights.pt')
+            self.assertTrue(torch.equal(submitted['fc.bias'], given['fc.bias']))
+            self.assertTrue(torch.equal(submitted['bn1.bias'], torch.zeros(64)))
 
 
 def episode_text_end_tools():

@@ -146,7 +146,7 @@ def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     return '\n'.join(lines)
 
 
-def reasoned_rules(n_examples, soft_budget=None):
+def reasoned_rules(n_examples, soft_budget=None, start_score=None):
     pacing = ('Leave room for phase 2: we suggest calling end_tools() before you have used about half of the budget.'
               if soft_budget else 'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about '
               'turn 5.')
@@ -160,8 +160,10 @@ def reasoned_rules(n_examples, soft_budget=None):
         'yours runs again.\n'
         f'- PHASE 2, labels. Available: labels() on any subset image, evaluate() (accuracy of a diff on all '
         f'{n_examples:,} images), data(), predict(), submit(). submit() ends the episode.\n'
-        'The submitted network is scored once on held-out images that you never see; the start network scores about '
-        '10%, chance. No gradients anywhere: autograd, torch.optim and torch.func transforms are disabled.',
+        'The submitted network is scored once on held-out images that you never see; the start network scores '
+        + (f'{start_score:.1%} on the held-out validation images. ' if start_score is not None
+           else 'about 10%, chance. ') +
+        'No gradients anywhere: autograd, torch.optim and torch.func transforms are disabled.',
         '# What we want you to do\nSubmit the network with the highest held-out accuracy you can, and learn from the '
         'labels in your own context in phase 2:\n'
         '1. Phase 1: with code on the unlabeled images, build a network (a diff) whose representations carry the '
@@ -178,16 +180,16 @@ def reasoned_rules(n_examples, soft_budget=None):
 
 
 def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3, max_tokens=None,
-                soft_budget=None):
+                soft_budget=None, warm=False, start_score=None):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
     if mode == 'reasoned':
-        rules = [reasoned_rules(n_examples, soft_budget)]
+        rules = [reasoned_rules(n_examples, soft_budget, start_score)]
     else:
         rules = [f'# {MODE_RULES[mode]}',
                  (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class '
                   'order).' if n_examples else '# Training subset\nnone')]
     return '\n\n'.join([
-        f'# Task: {task.name}\n{task.description}',
+        f'# Task: {task.name}\n{task.warm_description if warm else task.description}',
         f'# Dataset\n{json.dumps(DATASET_DESCRIPTIONS[task.dataset], indent=1)}',
         f'# Architecture\n{ARCHITECTURE}',
         f'# Writable tensors (name, shape, start-weight stats)\n{tensors}',

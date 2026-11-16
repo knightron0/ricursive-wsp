@@ -11,23 +11,42 @@ class Task:
     name: str
     dataset: str          # train subset, val and test all come from here
     num_classes: int
-    description: str
+    goal: str
+    origin: str
     needs_source: bool
+    note: str = ''
+
+    @property
+    def description(self):
+        return f'{self.goal} The starting weights are {self.origin}.' + (f' {self.note}' if self.note else '')
+
+    @property
+    def warm_description(self):
+        return (f'{self.goal} The starting weights are a network that another agent produced for this same task. That '
+                f'agent was given an identical prompt, except that its starting weights were {self.origin}. You are '
+                'not told how it arrived at this network.' + (f' {self.note}' if self.note else ''))
 
 
 TASKS = {
     'scratch-cifar10': Task(
         'scratch-cifar10', 'cifar10', 10,
-        'Write every weight of a ResNet-18 CIFAR-10 classifier yourself. The starting '
-        'weights are a random PyTorch initialization (BatchNorm running stats mean 0, var 1).',
+        'Write every weight of a ResNet-18 CIFAR-10 classifier yourself.',
+        'a random PyTorch initialization (BatchNorm running stats mean 0, var 1)',
         needs_source=False),
     'cifar10-to-cifar100': Task(
         'cifar10-to-cifar100', 'cifar100', 100,
-        'Turn a ResNet-18 trained on CIFAR-10 into a CIFAR-100 classifier. The starting '
-        'weights are the trained CIFAR-10 network, except fc (now 512 -> 100) which is a random '
-        'initialization. You may rebuild the head and edit any other weights.',
-        needs_source=True),
+        'Turn a ResNet-18 trained on CIFAR-10 into a CIFAR-100 classifier.',
+        'the trained CIFAR-10 network, except fc (now 512 -> 100) which is a random initialization',
+        needs_source=True, note='You may rebuild the head and edit any other weights.'),
 }
+
+
+def load_start(path, num_classes):
+    weights = torch.load(path, weights_only=True)
+    shapes = {k: list(v.shape) for k, v in weights.items()}
+    if shapes != state_shapes(num_classes):
+        raise ValueError(f'{path} is not a {num_classes}-class wsp ResNet-18 state_dict')
+    return {k: v.clone() for k, v in weights.items()}
 
 
 DATASET_DESCRIPTIONS = {

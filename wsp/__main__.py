@@ -28,7 +28,7 @@ from wsp.episode import MODES, Episode, audit
 from wsp.evaluation import evaluate, summarize
 from wsp.model import default_device
 from wsp.prompt import system_prompt, tool_specs, user_prompt
-from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
+from wsp.tasks import TASKS, apply_diff, load_start, start_weights, writable_names
 
 
 def save(path, value):
@@ -100,6 +100,8 @@ def parse_args(argv=None):
     p.add_argument('--tool-timeout', type=float, default=300)
     p.add_argument('--script', type=Path, help='Replay scripted calls instead of calling the API')
     p.add_argument('--source', type=Path, default=Path('checkpoints/resnet18_cifar10.pt'))
+    p.add_argument('--start-weights', type=Path,
+                   help='Start from this state_dict (another agent\'s submitted network); the prompt says so')
     p.add_argument('--data-dir', type=Path, default=Path('data'))
     p.add_argument('--device', default=default_device())
     p.add_argument('--output', type=Path,
@@ -128,12 +130,17 @@ def main(argv=None):
     task = TASKS[a.task]
     if task.needs_source and not a.source.exists():
         sys.exit(f'{a.source} not found; run `python train_base.py` first')
-    start = start_weights(task, torch.load(a.source, weights_only=True) if task.needs_source else None)
+    if a.start_weights:
+        start = load_start(a.start_weights, task.num_classes)
+    else:
+        start = start_weights(task, torch.load(a.source, weights_only=True) if task.needs_source else None)
     classes = datasets.class_names(task.dataset, a.data_dir)
     images, labels = datasets.load_split(task.dataset, 'train', a.data_dir)
     subset = (torch.zeros(0, dtype=torch.long) if a.mode == 'blind'
               else datasets.stratified_subset(labels, a.data_fraction, a.data_seed))
     images, labels = images[subset].clone(), labels[subset].clone()
+    start_score = (evaluate(start, datasets.load_split(task.dataset, 'val', a.data_dir), classes, a.device)['accuracy']
+                   if a.start_weights else None)
 
     out = a.output
     out.mkdir(parents=True, exist_ok=False)
@@ -142,7 +149,8 @@ def main(argv=None):
     sdk = a.provider == 'claude-sdk' and not a.script
     system = system_prompt(a.mode)
     prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
-                         a.max_tokens, a.token_budget if sdk else None)
+                         a.max_tokens, a.token_budget if sdk else None, warm=a.start_weights is not None,
+                         start_score=start_score)
     tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device())
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
