@@ -135,8 +135,9 @@ def main(argv=None):
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist()})
     system = system_prompt(a.mode)
-    prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries)
-    tools = tool_specs(a.mode, writable_names(start))
+    prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
+                         a.max_tokens)
+    tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device())
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
     if a.dry_run:

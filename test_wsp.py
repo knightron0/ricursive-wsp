@@ -369,19 +369,37 @@ class TurnTests(unittest.TestCase):
 
     def test_prompts_state_turns_phase2_reasoning_and_limits(self):
         start = initial_weights(10)
-        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_turns=10, format_retries=3)
-        self.assertIn('You have 10 turns. A turn is one reply of yours', prompt)
-        self.assertIn('at most 3 such replies', prompt)
+        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_turns=10, format_retries=3,
+                             max_tokens=96000)
+        for part in ('# How this episode works (mode reasoned)', '20 images, indices 0..19',
+                     'data["images"][i] in tools() code is image i', '- PHASE 1, no labels. Available: tools(), data(), '
+                     'predict()', 'end_tools() ends phase 1. It is one-way', '- PHASE 2, labels. Available: labels() on '
+                     'any subset image, evaluate()', '# What we want you to do', 'call predict() with your diff on many '
+                     'images, and labels() on the same indices', 'calling end_tools() by about turn 5',
+                     '# Diffs and costs', 'at most 10,000 numbers in total', 'each take a whole diff',
+                     'limited to 96,000 output tokens, thinking included', 'You have 10 turns. A turn is one reply',
+                     'once submit() is accepted, the rest of that reply is skipped', 'A reply with no calls still uses',
+                     'at most 3 such replies'):
+            self.assertIn(part, prompt)
+        self.assertNotIn('Pool', prompt)
         self.assertIn('reason over the (representation, label)\npairs yourself', system_prompt('reasoned'))
         self.assertNotIn('representation', system_prompt('full'))
-        self.assertIn('predict() your network on images, labels() on the same indices', prompt)
-        self.assertIn('20 images, indices 0..19', prompt)
-        self.assertNotIn('Pool', prompt)
-        specs = {t['name']: t['description'] for t in tool_specs('reasoned', writable_names(start))}
-        self.assertTrue(specs['evaluate'].startswith('Accuracy (one number)'))
-        self.assertIn('last 10,000 characters', specs['tools'])
-        self.assertIn('evaluate() and submit() check', prompt)
-        self.assertIn('submit() check', user_prompt(TASKS['scratch-cifar10'], 'blind', start, 0, 10000))
+        specs = {t['name']: t['description'] for t in tool_specs('reasoned', writable_names(start), 300, 'cpu')}
+        expected = {'data': ['96 lines', 'At most 16 images per call', 'Never includes labels'],
+                    'labels': ['{"index": "class name"}', 'Phase 2 only'],
+                    'tools': ['at most 300 s on cpu', 'last 10,000 characters', 'uint8 tensor [N, 3, 32, 32]'],
+                    'end_tools': ['One-way', 'calling it again is an error'],
+                    'predict': ['an empty list means the start weights', '"i [predicted class]: v1 ... v10"',
+                                'At most 500 images and 6,000 numbers', 'Works in both phases'],
+                    'evaluate': ['{"accuracy": x}', 'no per-class results', 'Phase 2 only'],
+                    'submit': ['Phase 2 only', '"accepted: N numbers in K tensors"', 'An empty diff is rejected']}
+        for name, parts in expected.items():
+            for part in parts:
+                with self.subTest(name=name, part=part):
+                    self.assertIn(part, specs[name])
+        blind = user_prompt(TASKS['scratch-cifar10'], 'blind', start, 0, 10000)
+        self.assertIn('submit() takes a whole diff', blind)
+        self.assertNotIn('output tokens, thinking included', blind)
 
 
 class PredictTests(unittest.TestCase):
