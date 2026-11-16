@@ -118,7 +118,15 @@ def turns_rules(max_turns, format_retries):
             f'diff problems alone does not count as a turn (at most {format_retries} such replies).')
 
 
-def diff_rules(mode, max_numbers, max_tokens):
+def budget_rules(soft_budget):
+    return (f'# Budget\nNothing enforces a limit on replies or tokens, but please keep the whole episode within about '
+            f'{soft_budget:,} output tokens, thinking included, and finish with an accepted submit(): without one the '
+            'episode has no score. A reply can contain several calls, which run in order; once submit() is accepted '
+            'the episode is over. A call the harness rejects returns an error message and has no effect (a tools() '
+            'call whose code raises still returns its output, and files it wrote before the error stay).')
+
+
+def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     calls = 'submit()' if mode == 'blind' else 'predict(), evaluate() and submit()'
     lines = ['# Diffs and costs',
              '- A diff is a list of {"name", "values"}: each tensor you change, with every one of its numbers, flat in '
@@ -129,13 +137,19 @@ def diff_rules(mode, max_numbers, max_tokens):
              'numbers again. Every number costs output tokens: keep diffs compact (small integers are cheap).',
              f'- {calls} {"checks" if mode == "blind" else "check"} the diff first (tensor names, number counts, finite '
              'values, running_var >= 0, the budget) and list every problem; nothing runs until the diff passes.']
-    if max_tokens:
+    if max_tokens and hard_cap:
         lines.append(f'- Each reply of yours is limited to {max_tokens:,} output tokens, thinking included. A reply '
                      'that hits the limit ends the episode with no score.')
+    elif max_tokens:
+        lines.append(f'- Each reply of yours is limited to {max_tokens:,} output tokens, thinking included; a reply that '
+                     'reaches it is cut off, so keep every reply well under it.')
     return '\n'.join(lines)
 
 
-def reasoned_rules(n_examples):
+def reasoned_rules(n_examples, soft_budget=None):
+    pacing = ('Leave room for phase 2: we suggest calling end_tools() before you have used about half of the budget.'
+              if soft_budget else 'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about '
+              'turn 5.')
     return '\n\n'.join([
         f'# How this episode works (mode reasoned)\nYou have a training subset of {n_examples:,} images, indices '
         f'0..{n_examples - 1} (class-balanced, not in class order). Every call and the sandbox use the same indices: '
@@ -159,15 +173,15 @@ def reasoned_rules(n_examples):
         '(representation, label) pairs in your own context: which features or outputs go with which class, which '
         'output rows or clusters stand for which class, what weights would separate the classes. Write the resulting '
         "numbers into your diff. evaluate() gives a diff's accuracy (one number) if you want to compare candidates.\n"
-        '4. submit() your final diff.\n'
-        'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about turn 5.',
+        '4. submit() your final diff.\n' + pacing,
     ])
 
 
-def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3, max_tokens=None):
+def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3, max_tokens=None,
+                soft_budget=None):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
     if mode == 'reasoned':
-        rules = [reasoned_rules(n_examples)]
+        rules = [reasoned_rules(n_examples, soft_budget)]
     else:
         rules = [f'# {MODE_RULES[mode]}',
                  (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class '
@@ -178,6 +192,6 @@ def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format
         f'# Architecture\n{ARCHITECTURE}',
         f'# Writable tensors (name, shape, start-weight stats)\n{tensors}',
         *rules,
-        diff_rules(mode, max_numbers, max_tokens),
-        turns_rules(max_turns, format_retries),
+        diff_rules(mode, max_numbers, max_tokens, hard_cap=soft_budget is None),
+        budget_rules(soft_budget) if soft_budget else turns_rules(max_turns, format_retries),
     ])

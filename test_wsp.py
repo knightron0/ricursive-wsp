@@ -1,6 +1,8 @@
 """Offline tests: no API key, no network, no CIFAR download (tiny random splits stand in)."""
+import asyncio
 from contextlib import redirect_stdout
 from functools import partial
+import importlib.util
 import io
 import json
 from pathlib import Path
@@ -468,6 +470,69 @@ class PredictTests(unittest.TestCase):
         self.assertEqual(schema['required'], ['weights', 'indices', 'layer', 'channels'])
         self.assertIn('Works in both phases, on any subset image', specs['predict']['description'])
         self.assertIn('labels() on any image (indices 0..19)', episode_text_end_tools())
+
+
+@unittest.skipUnless(importlib.util.find_spec('claude_agent_sdk'), 'claude-agent-sdk not installed')
+class SDKBackendTests(unittest.TestCase):
+    def test_tools_route_to_the_episode_and_stop_after_submit(self):
+        from wsp.sdk_agent import episode_tools
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            tools = {t.name: t for t in episode_tools(ep, tool_specs('reasoned', writable_names(ep.start)))}
+            self.assertEqual(set(tools), {'data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit'})
+            self.assertTrue(all(t.annotations.maxResultSizeChars >= 200_000 for t in tools.values()))
+            run = lambda name, args: asyncio.run(tools[name].handler(args))
+            out = run('labels', {'indices': [0]})
+            self.assertTrue(out['is_error'])
+            self.assertIn('only in phase 2', out['content'][0]['text'])
+            self.assertFalse(run('end_tools', {})['is_error'])
+            self.assertEqual(json.loads(run('labels', {'indices': [3]})['content'][0]['text']), {'3': 'c3'})
+            self.assertFalse(run('submit', BIAS)['is_error'])
+            late = run('labels', {'indices': [4]})
+            self.assertTrue(late['is_error'])
+            self.assertIn('episode is over', late['content'][0]['text'])
+            self.assertEqual([e['call'] for e in ep.log], ['labels', 'end_tools', 'labels', 'submit'])
+
+    def test_read_fence_allows_only_saved_tool_outputs(self):
+        from wsp.sdk_agent import read_allowed, saved_outputs_dir
+        with tempfile.TemporaryDirectory() as tmp:
+            root = saved_outputs_dir(tmp)
+            self.assertTrue(read_allowed(root / 'abc-session' / 'tool-results' / 'x.txt', tmp))
+            self.assertFalse(read_allowed(root / 'abc-session.jsonl', tmp))
+            self.assertFalse(read_allowed('/lfs/local/0/vedanga/scratch/ricursive-wsp/data/cifar10_train.pt', tmp))
+            self.assertFalse(read_allowed(root / '..' / 'other' / 'tool-results' / 'x.txt', tmp))
+
+    def test_transcript_serialisation_and_content_types(self):
+        from claude_agent_sdk import AssistantMessage, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage
+        from wsp.sdk_agent import content_types, to_json
+        messages = [to_json(AssistantMessage(content=[TextBlock('hi'), ToolUseBlock('t1', 'mcp__wsp__data', {})],
+                                             model='m')),
+                    to_json(UserMessage(content=[ToolResultBlock('t1', [{'type': 'text', 'text': 'ok'}])]))]
+        self.assertEqual(messages[0]['type'], 'AssistantMessage')
+        self.assertEqual(content_types(messages), ['text', 'tool_use', 'tool_result', 'text'])
+        self.assertIn('image', audit('reasoned', [], content_types(
+            [to_json(UserMessage(content=[ToolResultBlock('t2', [{'type': 'image'}])]))]))[0])
+
+    def test_soft_budget_prompt(self):
+        start = initial_weights(10)
+        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_tokens=96000,
+                             soft_budget=960000)
+        self.assertIn('# Budget\nNothing enforces a limit on replies or tokens, but please keep the whole episode '
+                      'within about 960,000 output tokens', prompt)
+        self.assertIn('before you have used about half of the budget', prompt)
+        self.assertIn('a reply that reaches it is cut off', prompt)
+        self.assertNotIn('# Turns', prompt)
+        self.assertNotIn('by about turn 5', prompt)
+
+    def test_dry_run_uses_soft_budget_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--provider',
+                      'claude-sdk', '--data-dir', tmp, '--output', str(out), '--dry-run'])
+            user = json.loads((out / 'prompt.json').read_text())['user']
+            self.assertIn('within about 960,000 output tokens', user)
 
 
 def episode_text_end_tools():

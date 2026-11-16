@@ -11,6 +11,7 @@ without labels, then end_tools() permanently disables tools() and opens labels/e
 --evaluate-test) are scored once on the submitted diff and never shown to the agent.
 """
 import argparse
+import asyncio
 from datetime import datetime, timezone
 from functools import partial
 import json
@@ -84,8 +85,12 @@ def parse_args(argv=None):
     p.add_argument('--mode', choices=MODES, required=True)
     p.add_argument('--data-fraction', type=float, default=0.0, help='Fraction (0, 1] of train (reasoned/full)')
     p.add_argument('--data-seed', type=int, default=0)
-    p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter'], default='anthropic')
-    p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), anthropic/claude-opus-5.5 (openrouter)')
+    p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'claude-sdk'], default='anthropic')
+    p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), '
+                                   'anthropic/claude-opus-5.5 (openrouter), claude-opus-5-5 (claude-sdk)')
+    p.add_argument('--token-budget', type=int, default=960000,
+                   help='claude-sdk: soft total output-token budget stated in the prompt (not enforced)')
+    p.add_argument('--sdk-max-turns', type=int, default=50, help='claude-sdk: backstop on agent-loop turns')
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
     p.add_argument('--max-tokens', type=int, default=64000, help='Per model turn')
     p.add_argument('--max-turns', type=int, default=10, help='Model replies; format-only rejections do not count')
@@ -134,9 +139,10 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=False)
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist()})
+    sdk = a.provider == 'claude-sdk' and not a.script
     system = system_prompt(a.mode)
     prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
-                         a.max_tokens)
+                         a.max_tokens, a.token_budget if sdk else None)
     tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device())
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
@@ -146,13 +152,19 @@ def main(argv=None):
     log = []
     episode = Episode(a.mode, start, images, labels, classes, out / 'workspace',
                       partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log)
-    agent = (ScriptedAgent.from_file(a.script) if a.script
-             else {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent}[a.provider](
-                 system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
-                                     'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
-                 a.max_tokens, a.effort))
+    if sdk:
+        from wsp.sdk_agent import SDKRun
+        agent = SDKRun(episode, system, prompt, tools, a.model or 'claude-opus-5-5', out / 'agent_cwd', a.effort,
+                       a.sdk_max_turns, a.max_tokens)
+    elif a.script:
+        agent = ScriptedAgent.from_file(a.script)
+    else:
+        agent = {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent}[a.provider](
+            system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
+                                               'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
+            a.max_tokens, a.effort)
 
-    progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0}
+    progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0, 'replies': 0}
 
     def save_transcript():
         messages = agent.transcript()
@@ -171,12 +183,28 @@ def main(argv=None):
                         agent.usage[-1] if agent.usage else None, counted), flush=True)
         progress['time'] = now
 
+    def sdk_reply(seconds, usage):
+        progress['replies'] += 1
+        save(out / 'calls.json', log)
+        save_transcript()
+        save(out / 'usage.json', agent.usage)
+        entries, progress['logged'] = log[progress['logged']:], len(log)
+        print(turn_line(progress['replies'], entries, a.mode, episode.locked, seconds, usage), flush=True)
+
     try:
-        run_episode(agent, episode, a.max_turns, checkpoint, a.format_retries)
+        if sdk:
+            agent.on_reply = sdk_reply
+            asyncio.run(agent.run())
+        else:
+            run_episode(agent, episode, a.max_turns, checkpoint, a.format_retries)
     finally:
         save(out / 'calls.json', log)
         save_transcript()
         save(out / 'usage.json', agent.usage)
+        if sdk and agent.result:
+            save(out / 'sdk_result.json', agent.result)
+            print(f'sdk result: {agent.result.get("subtype")}, {agent.result.get("num_turns")} turns, '
+                  f'${agent.result.get("total_cost_usd")}', flush=True)
         problems = audit(a.mode, log, agent.content_types())
         save(out / 'audit.json', {'clean': not problems, 'problems': problems})
     if problems:
