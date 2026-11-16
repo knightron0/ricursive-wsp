@@ -6,8 +6,8 @@
     python -m wsp ... --dry-run                      # write prompt + tool definitions, no API call
     python -m wsp ... --script calls.json            # replay scripted calls, no API call
 
-Modes (see wsp/episode.py): blind = tools() only, no data; reasoned = phase 1 tools/data(pool),
-then end_tools() permanently disables tools() and opens labels/evaluate/submit; full = everything. Val (and test, with
+Modes (see wsp/episode.py): blind = tools() only, no data; reasoned = phase 1 tools/data/predict
+without labels, then end_tools() permanently disables tools() and opens labels/evaluate/submit; full = everything. Val (and test, with
 --evaluate-test) are scored once on the submitted diff and never shown to the agent.
 """
 import argparse
@@ -84,8 +84,6 @@ def parse_args(argv=None):
     p.add_argument('--mode', choices=MODES, required=True)
     p.add_argument('--data-fraction', type=float, default=0.0, help='Fraction (0, 1] of train (reasoned/full)')
     p.add_argument('--data-seed', type=int, default=0)
-    p.add_argument('--labeled-share', type=float, default=0.5,
-                   help='reasoned: share of the subset in the labeled set (the rest is the unlabeled pool)')
     p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter'], default='anthropic')
     p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), anthropic/claude-opus-5.5 (openrouter)')
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
@@ -130,21 +128,14 @@ def main(argv=None):
     images, labels = datasets.load_split(task.dataset, 'train', a.data_dir)
     subset = (torch.zeros(0, dtype=torch.long) if a.mode == 'blind'
               else datasets.stratified_subset(labels, a.data_fraction, a.data_seed))
-    pool = 0
-    if a.mode == 'reasoned':  # pool first, then the labeled set; each in original index order
-        labeled_part = datasets.stratified_subset(labels[subset], a.labeled_share, a.data_seed + 1)
-        is_labeled = torch.zeros(len(subset), dtype=torch.bool)
-        is_labeled[labeled_part] = True
-        subset = torch.cat([subset[~is_labeled], subset[is_labeled]])
-        pool = int((~is_labeled).sum())
     images, labels = images[subset].clone(), labels[subset].clone()
 
     out = a.output
     out.mkdir(parents=True, exist_ok=False)
     save(out / 'config.json', vars(a))
-    save(out / 'subset_indices.json', {'indices': subset.tolist(), 'pool': pool})
+    save(out / 'subset_indices.json', {'indices': subset.tolist()})
     system = system_prompt(a.mode)
-    prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, pool, a.max_turns, a.format_retries)
+    prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries)
     tools = tool_specs(a.mode, writable_names(start))
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
@@ -153,7 +144,7 @@ def main(argv=None):
 
     log = []
     episode = Episode(a.mode, start, images, labels, classes, out / 'workspace',
-                      partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log, pool)
+                      partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log)
     agent = (ScriptedAgent.from_file(a.script) if a.script
              else {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent}[a.provider](
                  system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
@@ -185,7 +176,7 @@ def main(argv=None):
         save(out / 'calls.json', log)
         save_transcript()
         save(out / 'usage.json', agent.usage)
-        problems = audit(a.mode, log, agent.content_types(), pool)
+        problems = audit(a.mode, log, agent.content_types())
         save(out / 'audit.json', {'clean': not problems, 'problems': problems})
     if problems:
         sys.exit(f'AUDIT FAILED: {problems}')

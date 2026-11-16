@@ -34,35 +34,32 @@ score.
 | Mode | Calls | What sandbox code can read |
 |---|---|---|
 | `blind` | `tools`, `submit` | no data |
-| `reasoned` | phase 1: `tools`, `data` and `predict` (pool); **`end_tools()` permanently disables `tools()`**; phase 2: `labels`, `evaluate`, `data` and `predict` (any image), `submit` | pool images only |
+| `reasoned` | phase 1: `tools`, `data`, `predict`; **`end_tools()` permanently disables `tools()`**; phase 2: `labels`, `evaluate`, `data`, `predict`, `submit` | every subset image, no labels |
 | `full` | `data`, `labels`, `tools`, `predict`, `evaluate`, `submit` | training images and labels |
 
 No gradients in any mode: autograd, `torch.optim` and `torch.func` transforms are disabled in the sandbox.
 
-`reasoned` splits the training subset into two disjoint, class-balanced parts (`--labeled-share`, default 0.5):
-- **pool** (indices `0..P-1`): unlabeled images. The sandbox holds these, and `data()` shows them. Their labels are never returned by any call.
-- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them (accuracy only). Their pixels (`data()`) and representations (`predict()`) become visible only in phase 2.
-
-The episode runs in two phases. Phase 1 has `tools()`, and `data()` and `predict()` on the pool; `labels()`,
+`reasoned` uses one training subset, with no split. Phase 1 has no labels: the sandbox holds every subset image
+(`data.pt` = images and class names), and `tools()`, `data()` and `predict()` work on any of them; `labels()`,
 `evaluate()` and `submit()` are refused. The agent calls `end_tools()` to enter phase 2, which is one-way: `tools()`
-is gone for good, and `labels()`, `evaluate()`, `data()`, `predict()` and `submit()` become available. So nothing
-derived from a label ever reaches code: every number the agent's code computes describes a pool image, and every
-label, labeled image, labeled-image representation and score is seen only in context. `predict()` runs the agent's
-own network (a diff it writes) in the harness, not agent code. This closes two exploits seen in earlier runs:
-precomputing a fit in code and finishing it once the labels arrive, and probing `evaluate()` with crafted diffs,
-pasting the confusion matrices into `tools()` and solving for class statistics.
+is gone for good, and `labels()` (any subset image), `evaluate()` (accuracy on the whole subset), `data()`,
+`predict()` and `submit()` are available. So every image can have its pixels, its representations and its label
+seen, but nothing derived from a label ever reaches code: labels appear only after code is gone, and are combined
+with images and representations only in the agent's own context. `predict()` runs the agent's own network (a diff it
+writes) in the harness, not agent code. Phase-1 code can prepare features for exactly the images whose labels the
+agent later reads; finishing a fit from those labels can only happen in context. Probing `evaluate()` with crafted
+diffs and solving for class statistics in code is impossible, since `evaluate()` exists only in phase 2.
 
 Phase 2 is meant for in-context learning from labels. The system prompt and the `end_tools()` result say so: call
-`predict()` on labeled images to get the network's representations (final logits or any intermediate layer),
-`labels()` on the same indices, and reason over the (representation, label) pairs to decide the numbers to write.
-In `reasoned`, `evaluate()` returns only the accuracy: no confusion matrix, per-class accuracy or loss.
+`predict()` on images to get the network's representations (final logits or any intermediate layer), `labels()` on
+the same indices, and reason over the (representation, label) pairs to decide the numbers to write. In `reasoned`,
+`evaluate()` returns only the accuracy: no confusion matrix, per-class accuracy or loss.
 
 What's checked mechanically, by the harness and by `audit.json` after each run:
 1. In `reasoned`, no `tools()` call executes after `end_tools()`, and no `labels()`, `evaluate()` or `submit()` executes before it.
-2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image or representation (`data()`, `predict()`) is shown before `end_tools()`.
-3. No call outside the mode's list ever executes.
-4. The sandbox's `data.pt` holds labels only in `full` (in `reasoned`, pool images only).
-5. The transcript holds no `image` or `document` blocks.
+2. No call outside the mode's list ever executes.
+3. The sandbox's `data.pt` holds labels only in `full` (in `reasoned`, images only).
+4. The transcript holds no `image` or `document` blocks.
 
 ## Run
 

@@ -16,9 +16,9 @@ Write each tensor's values flat in row-major (C) order of its shape, e.g. a conv
 [out, in, kh, kw] goes out-channel by out-channel. Every number costs output tokens."""
 
 REASONED_SYSTEM = """In this episode, phase 2 (after end_tools()) is where you learn from labels, and we expect you
-to do that learning in your own context. No code runs in phase 2, but predict() does: give it a diff and the indices
-of labeled images, and it returns your network's representation of each image, either the final logits or the
-output of any intermediate layer. Call labels() on the same indices, and reason over the (representation, label)
+to do that learning in your own context. No code runs in phase 2, but predict() does: give it a diff and image
+indices, and it returns your network's representation of each image, either the final logits or the output of any
+intermediate layer. Call labels() on the same indices, and reason over the (representation, label)
 pairs yourself: which features or outputs go with which class, which of your output rows or clusters stand for which
 class, what weights would separate the classes. Then write the resulting numbers in your diff. Plan phase 1 so that
 this works: build representations in phase 1 that you can read and reason about in phase 2, and print every number
@@ -32,18 +32,16 @@ def system_prompt(mode):
 MODE_RULES = {
     'blind': 'Mode blind: you have no data. Available: tools(), submit(). Everything must come from your own '
              'knowledge. In tools() code, `data` is None. No gradients in any mode.',
-    'reasoned': 'Mode reasoned: the training subset has two disjoint parts. The POOL: unlabeled images; the sandbox '
-                'behind tools() holds them (`data` = {"images", "classes"}) and data() shows them; their labels are '
-                'never available. The LABELED SET: labels() gives their labels, evaluate() returns the accuracy of a '
-                'diff on them, and data() and predict() show them in phase 2. The episode has two phases. PHASE 1: '
-                'tools(), and data() and predict() on the pool; labels(), evaluate() and submit() are not available. '
+    'reasoned': 'Mode reasoned: the episode has two phases over the same training subset. PHASE 1: no labels. The '
+                'sandbox behind tools() holds every subset image (`data` = {"images", "classes"}, no labels), and '
+                'data() and predict() work on any of them; labels(), evaluate() and submit() are not available. '
                 'PHASE 2 starts when you call end_tools(). IMPORTANT: end_tools() is one-way: tools() is then '
-                'permanently disabled for the rest of the episode, and labels(), evaluate(), and data() and predict() '
-                'on any image (pool and labeled set) are available as often as you like, and submit() ends the '
-                'episode. Do all the code work you need in phase 1, then call end_tools(); print every number you '
-                'will need before that, since no code runs afterwards. In phase 2, learn from the labels in your own '
-                'context: predict() your network on labeled images, labels() on the same indices, and reason over '
-                'the pairs. No gradients in any mode.',
+                'permanently disabled for the rest of the episode, and labels() (any subset image), evaluate() '
+                '(accuracy on the whole subset), data() and predict() are available as often as you like, and '
+                'submit() ends the episode. Do all the code work you need in phase 1, then call end_tools(); print '
+                'every number you will need before that, since no code runs afterwards. In phase 2, learn from the '
+                'labels in your own context: predict() your network on images, labels() on the same indices, and '
+                'reason over the pairs. No gradients in any mode.',
     'full': 'Mode full: available: data(), labels(), tools(), predict(), evaluate(), submit(). In tools() code, '
             '`data` = {"images", "labels", "classes"}. No gradients in any mode (autograd and torch.optim are '
             'disabled).',
@@ -52,9 +50,9 @@ MODE_RULES = {
 CALL_DOCS = {
     'data': 'Training images by index, as text: per image 96 lines (R rows 0-31, then G, then B), each line 64 hex '
             'digits = 32 uint8 pixels. At most 16 images per call. Never includes labels.',
-    'labels': 'Class labels of training images by index (reasoned mode: labeled set only, phase 2 only).',
-    'end_tools': 'End phase 1 for good: tools() is permanently disabled, and labels(), evaluate(), submit(), and '
-                 'data() and predict() on the labeled set become available. Takes no arguments.',
+    'labels': 'Class labels of training images by index (reasoned mode: phase 2 only).',
+    'end_tools': 'End phase 1 for good: tools() is permanently disabled, and labels(), evaluate() and submit() become '
+                 'available; data() and predict() stay available. Takes no arguments.',
     'predict': 'Run the network defined by a diff (same format as evaluate(); an empty list means the start weights) '
                'on training images by index, and return one layer\'s output for each image. Never returns labels. '
                'layer: a module name from the architecture, e.g. "fc" (the logits, with the predicted class), '
@@ -76,8 +74,8 @@ CALL_DOCS = {
 }
 
 REASONED_CALL_DOCS = {
-    'predict': CALL_DOCS['predict'] + ' Phase 1: pool images only. Phase 2: any image, including the labeled set.',
-    'evaluate': "Accuracy (one number) of a candidate diff on the labeled set. Phase 2 only. The diff's format is "
+    'predict': CALL_DOCS['predict'] + ' Works in both phases, on any subset image.',
+    'evaluate': "Accuracy (one number) of a candidate diff on the whole training subset. Phase 2 only. The diff's format is "
                 'checked first (tensor names, number counts, finite values, budget); if anything is wrong, every '
                 'problem is listed and nothing is scored.',
     'submit': "Submit the final diff. Phase 2 only. Ends the episode if it is valid. The diff's format is checked "
@@ -115,7 +113,7 @@ def turns_rules(mode, max_turns, format_retries):
             f'does not count as a turn (at most {format_retries} such replies).')
 
 
-def user_prompt(task, mode, start, n_examples, max_numbers, pool=0, max_turns=10, format_retries=3):
+def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
     return '\n\n'.join([
         f'# Task: {task.name}\n{task.description}',
@@ -123,10 +121,8 @@ def user_prompt(task, mode, start, n_examples, max_numbers, pool=0, max_turns=10
         f'# Architecture\n{ARCHITECTURE}',
         f'# Writable tensors (name, shape, start-weight stats)\n{tensors}',
         f'# {MODE_RULES[mode]}',
-        (f'# Training subset\nPool: indices 0..{pool - 1} ({pool} unlabeled images). Labeled set: indices '
-         f'{pool}..{n_examples - 1} ({n_examples - pool} images). Each part is class-balanced and not in class order.'
-         if pool else f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in '
-                       f'class order).') if n_examples else '# Training subset\nnone',
+        (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class order).'
+         if n_examples else '# Training subset\nnone'),
         f'# Budget\nThe diff may hold at most {max_numbers:,} numbers in total.',
         turns_rules(mode, max_turns, format_retries),
     ])

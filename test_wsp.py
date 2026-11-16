@@ -32,7 +32,7 @@ def tiny(n=20):
 def episode(mode, tmp):
     images, labels = tiny() if mode != 'blind' else (torch.zeros(0, 3, 32, 32, dtype=torch.uint8), torch.zeros(0, dtype=torch.long))
     return Episode(mode, initial_weights(10), images, labels, CLASSES, Path(tmp) / 'ws',
-                   partial(apply_diff, max_numbers=10000), 'cpu', timeout=120, pool=10 if mode == 'reasoned' else 0)
+                   partial(apply_diff, max_numbers=10000), 'cpu', timeout=120)
 
 
 def fake_data_dir(root, n=60):
@@ -66,7 +66,7 @@ class LockTests(unittest.TestCase):
                 self.assertFalse(ep.call(name, args)[1], name)
             self.assertEqual([e['phase'] for e in ep.log], [1, 1, 2, 2, 2, 2, 2])
             self.assertIsNotNone(ep.submission)
-            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
+            self.assertEqual(audit('reasoned', ep.log), [])
 
     def test_labels_evaluate_submit_refused_in_phase_1(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
@@ -79,7 +79,7 @@ class LockTests(unittest.TestCase):
             self.assertIsNone(ep.submission)
             self.assertFalse(any(e['executed'] for e in ep.log))
             self.assertFalse(ep.call('tools', {'code': 'print(1)'})[1])
-            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
+            self.assertEqual(audit('reasoned', ep.log), [])
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('full', tmp)
             self.assertFalse(ep.call('evaluate', BIAS)[1])
@@ -125,28 +125,29 @@ class LockTests(unittest.TestCase):
             self.assertIn('[harness] Turn 1 of 10 done; 9 turns left.', nudges[0])
             self.assertIsNotNone(ep.submission)
 
-    def test_pool_and_labeled_set_rules(self):
+    def test_every_image_has_pixels_in_phase_1_and_labels_in_phase_2(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
-            self.assertIn('only in phase 2', ep.call('data', {'indices': [10]})[0])
-            self.assertFalse(ep.call('data', {'indices': [9]})[1])
-            self.assertFalse(ep.locked)
+            for i in (0, 10, 19):
+                self.assertFalse(ep.call('data', {'indices': [i]})[1], i)
+                self.assertFalse(ep.call('predict', {'weights': [], 'indices': [i], 'layer': 'fc',
+                                                     'channels': None})[1], i)
+            self.assertIn('only in phase 2', ep.call('labels', {'indices': [0]})[0])
             self.assertFalse(ep.call('end_tools', {})[1])
-            self.assertIn('have no labels', ep.call('labels', {'indices': [3]})[0])
-            self.assertFalse(ep.call('labels', {'indices': [19]})[1])
+            self.assertEqual(json.loads(ep.call('labels', {'indices': [0, 10, 19]})[0]),
+                             {'0': 'c0', '10': 'c0', '19': 'c9'})
             self.assertIn('"accuracy"', ep.call('evaluate', BIAS)[0])
-            self.assertFalse(ep.call('data', {'indices': [10]})[1])
-            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
+            self.assertEqual(audit('reasoned', ep.log), [])
 
-    def test_evaluate_scores_labeled_set_only_and_returns_accuracy_only(self):
+    def test_evaluate_scores_whole_subset_and_returns_accuracy_only(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
             ep.call('end_tools', {})
             m = json.loads(ep.call('evaluate', BIAS)[0])
             self.assertEqual(set(m), {'accuracy'})
             weights, _ = apply_diff(ep.start, BIAS['weights'], 10000)
-            labeled = evaluate(weights, (ep.images[10:], ep.labels[10:]), CLASSES, 'cpu')['accuracy']
-            self.assertEqual(m['accuracy'], labeled)
+            whole = evaluate(weights, (ep.images, ep.labels), CLASSES, 'cpu')['accuracy']
+            self.assertEqual(m['accuracy'], whole)
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             m = json.loads(episode('full', tmp).call('evaluate', BIAS)[0])
             self.assertIn('confusion', m)
@@ -156,10 +157,8 @@ class LockTests(unittest.TestCase):
         self.assertIn('tools executed after end_tools', audit('reasoned', log)[0])
         for call in ('labels', 'evaluate', 'submit'):
             self.assertIn(f'{call} executed before end_tools', audit('reasoned', [{'call': call, 'executed': True}])[0])
-        self.assertIn('pool images', audit('reasoned', [{'call': 'end_tools', 'executed': True},
-                                                        {'call': 'labels', 'executed': True, 'args': {'indices': [1]}}],
-                                           pool=5)[0])
-        self.assertIn('before end_tools', audit('reasoned', [{'call': 'data', 'executed': True, 'args': {'indices': [7]}}], pool=5)[0])
+        self.assertEqual(audit('reasoned', [{'call': 'data', 'executed': True, 'args': {'indices': [7]}},
+                                            {'call': 'predict', 'executed': True, 'args': {'indices': [7]}}]), [])
         self.assertIn('end_tools executed in full', audit('full', log)[0])
         self.assertEqual(audit('full', [{'call': 'labels', 'executed': True}, {'call': 'tools', 'executed': True}]), [])
         self.assertIn('image', audit('full', [], ['text', 'image'])[0])
@@ -171,7 +170,7 @@ class DataIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
             text, err = ep.call('tools', {'code': "print(sorted(data), len(data['images']))"})
-            self.assertEqual(text.strip(), "['classes', 'images'] 10")  # pool only
+            self.assertEqual(text.strip(), "['classes', 'images'] 20")
             self.assertNotIn('labels', torch.load(ep.workspace / 'data.pt'))
 
     def test_sandbox_cannot_read_repo_data_or_outside(self):
@@ -370,13 +369,14 @@ class TurnTests(unittest.TestCase):
 
     def test_prompts_state_turns_phase2_reasoning_and_limits(self):
         start = initial_weights(10)
-        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, pool=10, max_turns=10,
-                             format_retries=3)
+        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_turns=10, format_retries=3)
         self.assertIn('You have 10 turns. A turn is one reply of yours', prompt)
         self.assertIn('at most 3 such replies', prompt)
         self.assertIn('reason over the (representation, label)\npairs yourself', system_prompt('reasoned'))
         self.assertNotIn('representation', system_prompt('full'))
-        self.assertIn('predict() your network on labeled images, labels() on the same indices', prompt)
+        self.assertIn('predict() your network on images, labels() on the same indices', prompt)
+        self.assertIn('20 images, indices 0..19', prompt)
+        self.assertNotIn('Pool', prompt)
         specs = {t['name']: t['description'] for t in tool_specs('reasoned', writable_names(start))}
         self.assertTrue(specs['evaluate'].startswith('Accuracy (one number)'))
         self.assertIn('last 10,000 characters', specs['tools'])
@@ -411,24 +411,19 @@ class PredictTests(unittest.TestCase):
             _, rows = self.parse(ep.call('predict', {'weights': [], 'indices': [0], 'layer': 'layer2.0.bn1',
                                                      'channels': None})[0])
             self.assertEqual(len(rows[0]), 128)
-            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
+            self.assertEqual(audit('reasoned', ep.log), [])
 
-    def test_diff_is_used_and_phase_rules(self):
+    def test_diff_is_used_and_works_in_both_phases(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('reasoned', tmp)
             push = {'weights': [{'name': 'fc.bias', 'values': [0] * 3 + [1e4] + [0] * 6}]}
             text, _ = ep.call('predict', {**push, 'indices': [0, 1, 2], 'layer': 'fc', 'channels': None})
             self.assertEqual(text.count('[c3]'), 3)
-            text, err = ep.call('predict', {'weights': [], 'indices': [12], 'layer': 'fc', 'channels': None})
-            self.assertTrue(err)
-            self.assertIn('visible only in phase 2', text)
+            self.assertFalse(ep.call('predict', {'weights': [], 'indices': [12], 'layer': 'fc', 'channels': None})[1])
             ep.call('end_tools', {})
             self.assertFalse(ep.call('predict', {'weights': [], 'indices': [12, 19], 'layer': 'fc',
                                                  'channels': None})[1])
-            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
-            self.assertIn('predict on labeled-set images before end_tools',
-                          audit('reasoned', [{'call': 'predict', 'executed': True, 'args': {'indices': [12]}}],
-                                pool=10)[0])
+            self.assertEqual(audit('reasoned', ep.log), [])
 
     def test_bad_requests(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
@@ -453,8 +448,8 @@ class PredictTests(unittest.TestCase):
         specs = {t['name']: t for t in tool_specs('reasoned', writable_names(initial_weights(10)))}
         schema = specs['predict']['input_schema']
         self.assertEqual(schema['required'], ['weights', 'indices', 'layer', 'channels'])
-        self.assertIn('Phase 2: any image', specs['predict']['description'])
-        self.assertIn('predict() on any index', episode_text_end_tools())
+        self.assertIn('Works in both phases, on any subset image', specs['predict']['description'])
+        self.assertIn('labels() on any image (indices 0..19)', episode_text_end_tools())
 
 
 def episode_text_end_tools():
@@ -497,11 +492,9 @@ class EndToEndTests(unittest.TestCase):
                              [('tools', True), ('submit', False), ('end_tools', True), ('tools', False),
                               ('labels', True), ('submit', True)])
             split = json.loads((out / 'subset_indices.json').read_text())
-            labels = datasets.load_split('cifar10', 'train', tmp)[1][split['indices']]
-            pool, labeled = labels[:split['pool']], labels[split['pool']:]
-            self.assertEqual((len(pool), len(labeled)), (30, 30))
-            self.assertEqual(len(set(split['indices'])), 60)  # disjoint
-            self.assertEqual(torch.bincount(labeled, minlength=10).tolist(), [3] * 10)
+            self.assertEqual(set(split), {'indices'})
+            self.assertEqual(sorted(split['indices']), list(range(60)))
+            self.assertEqual(len(torch.load(out / 'workspace' / 'data.pt')['images']), 60)
             self.assertEqual(set(json.loads((out / 'result.json').read_text())), {'calls', 'val', 'test'})
             self.assertTrue(torch.equal(torch.load(out / 'weights.pt')['fc.bias'], torch.zeros(10)))
 

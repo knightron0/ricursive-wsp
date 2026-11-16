@@ -8,17 +8,15 @@
     evaluate(weights)              training-subset accuracy of a diff (aggregate numbers only)
     submit(weights)                final diff; ends the episode if valid
 
-reasoned mode splits the training subset into a pool (indices 0..pool-1) and a labeled set
-(pool..N-1), and runs in two phases:
-  1. phase 1: tools(), and data() and predict() on the pool; labels(), evaluate() and submit() are refused;
-  2. end_tools() switches to phase 2 for good: tools() never executes again, and labels(),
-     evaluate(), submit(), and data() and predict() on the labeled set become available;
-  3. the sandbox holds only pool images; pool labels are never returned by any call;
-  4. labels() covers only the labeled set, and evaluate() scores on it, returning the accuracy only.
+reasoned mode runs in two phases over one training subset (no split):
+  1. phase 1: tools(), data() and predict(); the sandbox holds every subset image and no labels;
+     labels(), evaluate() and submit() are refused;
+  2. end_tools() switches to phase 2 for good: tools() never executes again, and labels() (any
+     subset image), evaluate() (accuracy only, on the whole subset) and submit() become available;
+     data() and predict() stay available.
 predict(), evaluate() and submit() check a diff's format first; a format rejection is logged with
-status "format". So nothing derived from a label ever reaches code, and no number computed by the
-agent's code describes an image whose label the agent sees. predict() runs the agent's own
-network in the harness, and its output on labeled images is seen only in context.
+status "format". So nothing derived from a label ever reaches code: labels appear only after code
+is gone, and the agent combines them with images and representations in its own context.
 """
 import json
 import os
@@ -36,7 +34,6 @@ ALLOWED = {'blind': {'tools', 'submit'},
            'reasoned': {'data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit'},
            'full': {'data', 'labels', 'tools', 'predict', 'evaluate', 'submit'}}
 PHASE2_CALLS = {'labels', 'evaluate', 'submit'}
-PHASE1_POOL_ONLY = {'data', 'predict'}
 MAX_IMAGES_PER_CALL = 16
 MAX_OUTPUT_CHARS = 10000
 PREDICT_MAX_NUMBERS = 6000
@@ -54,16 +51,15 @@ def pixels_text(image):
 
 class Episode:
     def __init__(self, mode, start, images, labels, classes, workspace, apply_diff, device='cpu',
-                 timeout=300, log=None, pool=0):
-        assert mode in MODES and (mode == 'reasoned') == (pool > 0) and pool < max(len(labels), 1)
+                 timeout=300, log=None):
+        assert mode in MODES
         self.mode, self.start, self.images, self.labels, self.classes = mode, start, images, labels, classes
-        self.pool = pool
         self.workspace, self.apply_diff, self.device, self.timeout = Path(workspace), apply_diff, device, timeout
         self.locked, self.submission, self.log = False, None, log if log is not None else []
         self.workspace.mkdir(parents=True, exist_ok=True)
         torch.save(start, self.workspace / 'start.pt')
-        if mode == 'reasoned':  # pool images only, no labels, ever
-            torch.save({'images': images[:pool], 'classes': classes}, self.workspace / 'data.pt')
+        if mode == 'reasoned':
+            torch.save({'images': images, 'classes': classes}, self.workspace / 'data.pt')
         elif mode == 'full':
             torch.save({'images': images, 'labels': labels, 'classes': classes}, self.workspace / 'data.pt')
 
@@ -101,20 +97,14 @@ class Episode:
             raise ValueError(f'indices must be a list of ints in [0, {len(self.labels)})')
         return idx
 
-    def _visible(self, idx):
-        if self.pool and not self.locked and any(i >= self.pool for i in idx):
-            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only in phase 2, after end_tools()')
-        return idx
-
     def _data(self, args):
         idx = self._indices(args)
         if len(idx) > MAX_IMAGES_PER_CALL:
             raise ValueError(f'at most {MAX_IMAGES_PER_CALL} images per call')
-        self._visible(idx)
         return '\n\n'.join(f'image {i}:\n{pixels_text(self.images[i])}' for i in idx)
 
     def _predict(self, args):
-        idx = self._visible(self._indices(args))
+        idx = self._indices(args)
         if not idx or len(idx) > PREDICT_MAX_IMAGES:
             raise ValueError(f'give 1 to {PREDICT_MAX_IMAGES} image indices')
         weights, _ = self._diff(args)
@@ -144,16 +134,14 @@ class Episode:
         if self.locked:
             raise ValueError('already in phase 2')
         self.locked = True
-        return ('Phase 2 has started. tools() is permanently disabled. Available now: labels() and evaluate() on the '
-                f'labeled set (indices {self.pool}..{len(self.labels) - 1}), data() and predict() on any index, and '
-                'submit(). Learn from the labels in your own context: predict() your network on labeled images, '
-                'call labels() on the same indices, and reason over the (representation, label) pairs to decide the '
+        return ('Phase 2 has started. tools() is permanently disabled. Available now: labels() on any image '
+                f'(indices 0..{len(self.labels) - 1}), evaluate() (accuracy on all of them), data(), predict() and '
+                'submit(). Learn from the labels in your own context: predict() your network on images, call '
+                'labels() on the same indices, and reason over the (representation, label) pairs to decide the '
                 'numbers you write.')
 
     def _labels(self, args):
         idx = self._indices(args)
-        if self.pool and any(i < self.pool for i in idx):
-            raise ValueError(f'pool images (indices < {self.pool}) have no labels; labeled set is {self.pool}..{len(self.labels) - 1}')
         return json.dumps({i: self.classes[self.labels[i]] for i in idx})
 
     def _tools(self, args):
@@ -176,7 +164,7 @@ class Episode:
 
     def _evaluate(self, args):
         weights, _ = self._diff(args)
-        m = evaluate(weights, (self.images[self.pool:], self.labels[self.pool:]), self.classes, self.device)
+        m = evaluate(weights, (self.images, self.labels), self.classes, self.device)
         if self.mode == 'reasoned':
             return json.dumps({'accuracy': m['accuracy']})
         m.pop('activations', None)
@@ -204,16 +192,10 @@ def _summary(args):
     return args
 
 
-def audit(mode, log, transcript_blocks=(), pool=0):
+def audit(mode, log, transcript_blocks=()):
     """Re-check the invariants from the log; returns a list of violations (empty = clean)."""
     problems, locked = [], False
     for i, e in enumerate(log):
-        idx = e.get('args', {}).get('indices', []) if isinstance(e.get('args'), dict) else []
-        if mode == 'reasoned' and e['executed'] and e['call'] == 'labels' and any(j < pool for j in idx):
-            problems.append(f'call {i}: labels returned for pool images')
-        if (mode == 'reasoned' and e['executed'] and e['call'] in PHASE1_POOL_ONLY and not locked
-                and any(j >= pool for j in idx)):
-            problems.append(f'call {i}: {e["call"]} on labeled-set images before end_tools')
         if e['executed'] and e['call'] not in ALLOWED[mode]:
             problems.append(f'call {i}: {e["call"]} executed in {mode} mode')
         if mode == 'reasoned' and e['executed'] and e['call'] in PHASE2_CALLS and not locked:
