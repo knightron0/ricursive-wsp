@@ -1,22 +1,24 @@
 """The calls an agent can make, the reasoned-mode phases, and the audit.
 
-    data(indices)     training images as hex text (never labels)
-    labels(indices)   class labels
-    tools(code)       Python in the sandbox
-    end_tools()       reasoned only: leave phase 1 for good
-    evaluate(weights) training-subset accuracy of a diff (aggregate numbers only)
-    submit(weights)   final diff; ends the episode if valid
+    data(indices)                  training images as hex text (never labels)
+    labels(indices)                class labels
+    tools(code)                    Python in the sandbox
+    end_tools()                    reasoned only: leave phase 1 for good
+    predict(weights, indices, ..)  one layer's output of the network a diff defines, per image
+    evaluate(weights)              training-subset accuracy of a diff (aggregate numbers only)
+    submit(weights)                final diff; ends the episode if valid
 
 reasoned mode splits the training subset into a pool (indices 0..pool-1) and a labeled set
 (pool..N-1), and runs in two phases:
-  1. phase 1: tools() and data() on the pool; labels(), evaluate() and submit() are refused;
+  1. phase 1: tools(), and data() and predict() on the pool; labels(), evaluate() and submit() are refused;
   2. end_tools() switches to phase 2 for good: tools() never executes again, and labels(),
-     evaluate(), submit() and data() on the labeled set become available;
+     evaluate(), submit(), and data() and predict() on the labeled set become available;
   3. the sandbox holds only pool images; pool labels are never returned by any call;
   4. labels() covers only the labeled set, and evaluate() scores on it, returning the accuracy only.
-evaluate() and submit() check a diff's format first; a format rejection is logged with status "format".
-So nothing derived from a label ever reaches code, and no number computed by code describes an
-image whose label the agent sees.
+predict(), evaluate() and submit() check a diff's format first; a format rejection is logged with
+status "format". So nothing derived from a label ever reaches code, and no number computed by the
+agent's code describes an image whose label the agent sees. predict() runs the agent's own
+network in the harness, and its output on labeled images is seen only in context.
 """
 import json
 import os
@@ -26,16 +28,19 @@ import sys
 
 import torch
 
-from wsp.evaluation import evaluate
+from wsp.evaluation import evaluate, layer_outputs
 
 ROOT = Path(__file__).resolve().parent.parent
 MODES = ('blind', 'reasoned', 'full')
 ALLOWED = {'blind': {'tools', 'submit'},
-           'reasoned': {'data', 'labels', 'tools', 'end_tools', 'evaluate', 'submit'},
-           'full': {'data', 'labels', 'tools', 'evaluate', 'submit'}}
+           'reasoned': {'data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit'},
+           'full': {'data', 'labels', 'tools', 'predict', 'evaluate', 'submit'}}
 PHASE2_CALLS = {'labels', 'evaluate', 'submit'}
+PHASE1_POOL_ONLY = {'data', 'predict'}
 MAX_IMAGES_PER_CALL = 16
 MAX_OUTPUT_CHARS = 10000
+PREDICT_MAX_NUMBERS = 6000
+PREDICT_MAX_IMAGES = 500
 
 
 class FormatError(ValueError):
@@ -96,20 +101,54 @@ class Episode:
             raise ValueError(f'indices must be a list of ints in [0, {len(self.labels)})')
         return idx
 
+    def _visible(self, idx):
+        if self.pool and not self.locked and any(i >= self.pool for i in idx):
+            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only in phase 2, after end_tools()')
+        return idx
+
     def _data(self, args):
         idx = self._indices(args)
         if len(idx) > MAX_IMAGES_PER_CALL:
             raise ValueError(f'at most {MAX_IMAGES_PER_CALL} images per call')
-        if self.pool and not self.locked and any(i >= self.pool for i in idx):
-            raise ValueError(f'labeled-set images (indices >= {self.pool}) are visible only in phase 2, after end_tools()')
+        self._visible(idx)
         return '\n\n'.join(f'image {i}:\n{pixels_text(self.images[i])}' for i in idx)
+
+    def _predict(self, args):
+        idx = self._visible(self._indices(args))
+        if not idx or len(idx) > PREDICT_MAX_IMAGES:
+            raise ValueError(f'give 1 to {PREDICT_MAX_IMAGES} image indices')
+        weights, _ = self._diff(args)
+        layer = args.get('layer') or 'fc'
+        out = layer_outputs(weights, self.images[idx], layer, len(self.classes), self.device)
+        channels = args.get('channels')
+        if channels is not None:
+            if not (isinstance(channels, list) and len(channels) == 2 and all(isinstance(c, int) for c in channels)
+                    and 0 <= channels[0] < channels[1] <= out.shape[1]):
+                raise ValueError(f'channels must be [start, end) with 0 <= start < end <= {out.shape[1]}, or null')
+            out = out[:, channels[0]:channels[1]]
+        first = channels[0] if channels is not None else 0
+        if out.numel() > PREDICT_MAX_NUMBERS:
+            raise ValueError(f'{len(idx)} images x {out.shape[1]} values = {out.numel()} numbers; at most '
+                             f'{PREDICT_MAX_NUMBERS} per call: ask for fewer images or a channels range')
+        if layer == 'fc':
+            head = f'layer fc: {out.shape[1]} logits per image, in class order {self.classes}; predicted class first'
+            rows = [f'{i} [{self.classes[int(o.argmax())]}]: ' + ' '.join(f'{v:.3g}' for v in o.tolist())
+                    for i, o in zip(idx, out)]
+        else:
+            head = (f'layer {layer}: channels {first}..{first + out.shape[1] - 1}, one value per channel per image '
+                    f'(spatial outputs averaged over space)')
+            rows = [f'{i}: ' + ' '.join(f'{v:.3g}' for v in o.tolist()) for i, o in zip(idx, out)]
+        return '\n'.join([head] + rows)
 
     def _end_tools(self, args):
         if self.locked:
             raise ValueError('already in phase 2')
         self.locked = True
         return ('Phase 2 has started. tools() is permanently disabled. Available now: labels() and evaluate() on the '
-                f'labeled set (indices {self.pool}..{len(self.labels) - 1}), data() on any index, and submit().')
+                f'labeled set (indices {self.pool}..{len(self.labels) - 1}), data() and predict() on any index, and '
+                'submit(). Learn from the labels in your own context: predict() your network on labeled images, '
+                'call labels() on the same indices, and reason over the (representation, label) pairs to decide the '
+                'numbers you write.')
 
     def _labels(self, args):
         idx = self._indices(args)
@@ -160,7 +199,8 @@ def clip(text, limit=2000):
 
 def _summary(args):
     if 'weights' in args and isinstance(args['weights'], list):
-        return {'weights': [e.get('name') if isinstance(e, dict) else '?' for e in args['weights']]}
+        return {**{k: v for k, v in args.items() if k != 'weights'},
+                'weights': [e.get('name') if isinstance(e, dict) else '?' for e in args['weights']]}
     return args
 
 
@@ -171,8 +211,9 @@ def audit(mode, log, transcript_blocks=(), pool=0):
         idx = e.get('args', {}).get('indices', []) if isinstance(e.get('args'), dict) else []
         if mode == 'reasoned' and e['executed'] and e['call'] == 'labels' and any(j < pool for j in idx):
             problems.append(f'call {i}: labels returned for pool images')
-        if mode == 'reasoned' and e['executed'] and e['call'] == 'data' and not locked and any(j >= pool for j in idx):
-            problems.append(f'call {i}: labeled-set images shown before end_tools')
+        if (mode == 'reasoned' and e['executed'] and e['call'] in PHASE1_POOL_ONLY and not locked
+                and any(j >= pool for j in idx)):
+            problems.append(f'call {i}: {e["call"]} on labeled-set images before end_tools')
         if e['executed'] and e['call'] not in ALLOWED[mode]:
             problems.append(f'call {i}: {e["call"]} executed in {mode} mode')
         if mode == 'reasoned' and e['executed'] and e['call'] in PHASE2_CALLS and not locked:

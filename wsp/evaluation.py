@@ -73,6 +73,27 @@ def evaluate(weights, split, classes, device='cpu', batch_size=500):
     return metrics
 
 
+@torch.no_grad()
+def layer_outputs(weights, images, name, num_classes, device='cpu', batch_size=500):
+    model = ResNet18(num_classes)
+    model.load_state_dict(weights)
+    model.to(device).eval()
+    modules = dict(model.named_modules())
+    if not name or name not in modules:
+        raise ValueError(f'unknown layer {name!r}; use a module name such as "fc", "avgpool", "layer4", "layer3.1", '
+                         f'"layer2.0.bn1", "bn1" or "conv1"')
+    captured, chunks = {}, []
+    hook = modules[name].register_forward_hook(lambda m, i, o: captured.__setitem__('x', o))
+    try:
+        for start in range(0, len(images), batch_size):
+            model(normalize(images[start:start + batch_size].to(device)))
+            x = captured['x'].float()
+            chunks.append((x.mean(dim=(2, 3)) if x.dim() == 4 else x.flatten(1)).cpu())
+    finally:
+        hook.remove()
+    return torch.cat(chunks)
+
+
 def summarize(metrics):
     return {'accuracy': metrics['accuracy'], 'loss': metrics['loss']}
 

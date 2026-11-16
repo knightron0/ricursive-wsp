@@ -60,6 +60,13 @@ def usage_summary(usage):
     return ', '.join(parts)
 
 
+def pending_block(results):
+    if isinstance(results, str):
+        return {'role': 'pending_user_message', 'content': results}
+    return {'role': 'pending_tool_results',
+            'content': [{'tool_call_id': i, 'content': text, 'is_error': error} for i, text, error in results]}
+
+
 def turn_line(turn, entries, mode, locked, seconds, usage, counted=True):
     head = f'turn {turn}' if counted else f'turn {turn + 1} retry (format only, not counted)'
     if mode == 'reasoned':
@@ -153,11 +160,18 @@ def main(argv=None):
                                      'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
                  a.max_tokens, a.effort))
 
-    progress = {'logged': 0, 'time': time.monotonic()}
+    progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0}
 
-    def checkpoint(turn, counted=True):
+    def save_transcript():
+        messages = agent.transcript()
+        if progress['pending'] is not None and len(messages) == progress['length']:
+            messages = messages + [pending_block(progress['pending'])]
+        save(out / 'transcript.json', messages)
+
+    def checkpoint(turn, counted=True, results=None):
+        progress['pending'], progress['length'] = results, len(agent.transcript())
         save(out / 'calls.json', log)
-        save(out / 'transcript.json', agent.transcript())
+        save_transcript()
         save(out / 'usage.json', agent.usage)
         now = time.monotonic()
         entries, progress['logged'] = log[progress['logged']:], len(log)
@@ -169,7 +183,7 @@ def main(argv=None):
         run_episode(agent, episode, a.max_turns, checkpoint, a.format_retries)
     finally:
         save(out / 'calls.json', log)
-        save(out / 'transcript.json', agent.transcript())
+        save_transcript()
         save(out / 'usage.json', agent.usage)
         problems = audit(a.mode, log, agent.content_types(), pool)
         save(out / 'audit.json', {'clean': not problems, 'problems': problems})

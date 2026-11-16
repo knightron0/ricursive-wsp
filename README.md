@@ -13,10 +13,11 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 | `labels(indices)` | class labels | harness |
 | `tools(code)` | the last 10,000 characters of stdout/stderr of Python run in the sandbox | sandbox |
 | `end_tools()` | `reasoned` only: ends phase 1 for good | harness |
+| `predict(weights, indices, layer, channels)` | one layer's output, per image, of the network a diff defines: `fc` logits with the predicted class, or any module's output averaged over space (one value per channel), optionally a `[start, end)` channel range; ≤500 images and ≤6,000 numbers per call, 3 significant digits, never labels | harness |
 | `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only); in `reasoned`, the accuracy alone | harness |
 | `submit(weights)` | validation result; a valid diff ends the episode | harness |
 
-`evaluate()` and `submit()` check the diff's format first (tensor names, number counts, finite values, the
+`predict()`, `evaluate()` and `submit()` check the diff's format first (tensor names, number counts, finite values, the
 `--max-numbers` budget) and list every problem; a call that fails the check is logged with status `format` and
 nothing is scored or submitted.
 
@@ -33,28 +34,32 @@ score.
 | Mode | Calls | What sandbox code can read |
 |---|---|---|
 | `blind` | `tools`, `submit` | no data |
-| `reasoned` | phase 1: `tools`, `data` (pool); **`end_tools()` permanently disables `tools()`**; phase 2: `labels`, `evaluate`, `data`, `submit` | pool images only |
-| `full` | `data`, `labels`, `tools`, `evaluate`, `submit` | training images and labels |
+| `reasoned` | phase 1: `tools`, `data` and `predict` (pool); **`end_tools()` permanently disables `tools()`**; phase 2: `labels`, `evaluate`, `data` and `predict` (any image), `submit` | pool images only |
+| `full` | `data`, `labels`, `tools`, `predict`, `evaluate`, `submit` | training images and labels |
 
 No gradients in any mode: autograd, `torch.optim` and `torch.func` transforms are disabled in the sandbox.
 
 `reasoned` splits the training subset into two disjoint, class-balanced parts (`--labeled-share`, default 0.5):
 - **pool** (indices `0..P-1`): unlabeled images. The sandbox holds these, and `data()` shows them. Their labels are never returned by any call.
-- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them (accuracy only). Their pixels (`data()`) become visible only in phase 2.
+- **labeled set** (indices `P..N-1`): `labels()` covers only these, and `evaluate()` scores on them (accuracy only). Their pixels (`data()`) and representations (`predict()`) become visible only in phase 2.
 
-The episode runs in two phases. Phase 1 has `tools()` and `data()` on the pool; `labels()`, `evaluate()` and
-`submit()` are refused. The agent calls `end_tools()` to enter phase 2, which is one-way: `tools()` is gone for
-good, and `labels()`, `evaluate()`, `data()` and `submit()` become available. So nothing derived from a label ever
-reaches code: every number code computes describes a pool image, and every label, labeled image and score is
-seen only in context. This closes two exploits seen in earlier runs: precomputing a fit in code and finishing it
-once the labels arrive, and probing `evaluate()` with crafted diffs, pasting the confusion matrices into
-`tools()` and solving for class statistics. The system prompt tells the agent that phase 2 is where it learns from
-labels, by reasoning over labeled images (`data()`) and their labels in its own context. In `reasoned`,
-`evaluate()` returns only the accuracy: no confusion matrix, per-class accuracy or loss.
+The episode runs in two phases. Phase 1 has `tools()`, and `data()` and `predict()` on the pool; `labels()`,
+`evaluate()` and `submit()` are refused. The agent calls `end_tools()` to enter phase 2, which is one-way: `tools()`
+is gone for good, and `labels()`, `evaluate()`, `data()`, `predict()` and `submit()` become available. So nothing
+derived from a label ever reaches code: every number the agent's code computes describes a pool image, and every
+label, labeled image, labeled-image representation and score is seen only in context. `predict()` runs the agent's
+own network (a diff it writes) in the harness, not agent code. This closes two exploits seen in earlier runs:
+precomputing a fit in code and finishing it once the labels arrive, and probing `evaluate()` with crafted diffs,
+pasting the confusion matrices into `tools()` and solving for class statistics.
+
+Phase 2 is meant for in-context learning from labels. The system prompt and the `end_tools()` result say so: call
+`predict()` on labeled images to get the network's representations (final logits or any intermediate layer),
+`labels()` on the same indices, and reason over the (representation, label) pairs to decide the numbers to write.
+In `reasoned`, `evaluate()` returns only the accuracy: no confusion matrix, per-class accuracy or loss.
 
 What's checked mechanically, by the harness and by `audit.json` after each run:
 1. In `reasoned`, no `tools()` call executes after `end_tools()`, and no `labels()`, `evaluate()` or `submit()` executes before it.
-2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image is shown before `end_tools()`.
+2. In `reasoned`, `labels()` never returns a pool label, and no labeled-set image or representation (`data()`, `predict()`) is shown before `end_tools()`.
 3. No call outside the mode's list ever executes.
 4. The sandbox's `data.pt` holds labels only in `full` (in `reasoned`, pool images only).
 5. The transcript holds no `image` or `document` blocks.
@@ -102,7 +107,8 @@ Each run writes `runs/<timestamp>/`: `config.json`, `subset_indices.json`, `prom
 `calls.json` (every call with its phase and status: `ok`, `refused` by the mode or phase rules, or `failed` on
 invalid input; results longer than 2,000 characters keep their head and tail), `transcript.json`, `usage.json`,
 `audit.json`, `workspace/`, and once there's a valid submission, `weights.pt` and `result.json`. `calls.json`,
-`transcript.json` and `usage.json` are rewritten after every turn. Stdout gets one line per turn: that turn's calls
+`transcript.json` and `usage.json` are rewritten after every turn; results the model hasn't been sent yet appear as a
+final `pending_tool_results` (or `pending_user_message`) entry of `transcript.json`. Stdout gets one line per turn: that turn's calls
 with their status, the phase (`reasoned`), wall time, and tokens and cost when the provider reports them, e.g.
 `turn 36 [phase 1->2]: tools, end_tools | 81s | in 52.0k (50.0k cached), out 3.1k, $0.061`.
 A diff with several invalid tensors is rejected with all of them listed.

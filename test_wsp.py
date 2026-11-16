@@ -14,7 +14,7 @@ from wsp import data as datasets
 from wsp.__main__ import describe, main, turn_line
 from wsp.agent import ScriptedAgent, run_episode
 from wsp.episode import Episode, audit, clip, pixels_text
-from wsp.evaluation import evaluate
+from wsp.evaluation import evaluate, layer_outputs
 from wsp.model import initial_weights, state_shapes
 from wsp.prompt import system_prompt, tool_specs, user_prompt
 from wsp.tasks import TASKS, apply_diff, start_weights, writable_names
@@ -216,7 +216,7 @@ class DataIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep = episode('blind', tmp)
             self.assertIn('None', ep.call('tools', {'code': 'print(data)'})[0])
-            for name in ('data', 'labels', 'evaluate', 'end_tools'):
+            for name in ('data', 'labels', 'evaluate', 'end_tools', 'predict'):
                 self.assertTrue(ep.call(name, {'indices': [0]})[1], name)
 
     def test_data_is_hex_pixels_only(self):
@@ -274,8 +274,8 @@ class DiffTests(unittest.TestCase):
         names = writable_names(initial_weights(10))
         self.assertEqual([t['name'] for t in tool_specs('blind', names)], ['tools', 'submit'])
         self.assertEqual([t['name'] for t in tool_specs('reasoned', names)],
-                         ['data', 'labels', 'tools', 'end_tools', 'evaluate', 'submit'])
-        self.assertEqual(len(tool_specs('full', names)), 5)
+                         ['data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit'])
+        self.assertEqual(len(tool_specs('full', names)), 6)
 
     def test_transfer_start(self):
         source = initial_weights(10, seed=1)
@@ -327,7 +327,7 @@ class LoggingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep, turns = episode('reasoned', tmp), []
             agent = ScriptedAgent([[], [{'name': 'end_tools', 'args': {}}], [{'name': 'submit', 'args': BIAS}]])
-            run_episode(agent, ep, on_turn=lambda t, counted: turns.append((t, counted)))
+            run_episode(agent, ep, on_turn=lambda t, counted, r: turns.append((t, counted)))
             self.assertEqual(turns, [(1, True), (2, True), (3, True)])
 
 
@@ -346,7 +346,7 @@ class TurnTests(unittest.TestCase):
             ep, turns = episode('reasoned', tmp), []
             agent = self.recorder([[{'name': 'end_tools', 'args': {}}]] + [[{'name': 'submit', 'args': self.BAD}]] * 4
                                   + [[{'name': 'submit', 'args': BIAS}]])
-            run_episode(agent, ep, max_turns=3, on_turn=lambda t, c: turns.append((t, c)), format_retries=3)
+            run_episode(agent, ep, max_turns=3, on_turn=lambda t, c, r: turns.append((t, c)), format_retries=3)
             self.assertEqual(turns, [(1, True), (1, False), (1, False), (1, False), (2, True), (3, True)])
             self.assertIsNotNone(ep.submission)
             notes = [r[-1][1].split('\n\n')[-1] for r in agent.seen[1:]]
@@ -363,7 +363,7 @@ class TurnTests(unittest.TestCase):
             agent = self.recorder([[{'name': 'tools', 'args': {'code': 'print(1)'}}],
                                    [{'name': 'tools', 'args': {'code': 'print(2)'}}, {'name': 'submit', 'args': BIAS}],
                                    [{'name': 'end_tools', 'args': {}}], [{'name': 'submit', 'args': BIAS}]])
-            run_episode(agent, ep, max_turns=2, on_turn=lambda t, c: turns.append((t, c)))
+            run_episode(agent, ep, max_turns=2, on_turn=lambda t, c, r: turns.append((t, c)))
             self.assertEqual(turns, [(1, True), (2, True)])
             self.assertIsNone(ep.submission)
             self.assertIn('call end_tools() before submit() in that same reply', agent.seen[1][-1][1])
@@ -374,13 +374,92 @@ class TurnTests(unittest.TestCase):
                              format_retries=3)
         self.assertIn('You have 10 turns. A turn is one reply of yours', prompt)
         self.assertIn('at most 3 such replies', prompt)
-        self.assertIn('reasoning in your own context', system_prompt('reasoned'))
-        self.assertNotIn('reasoning in your own context', system_prompt('full'))
+        self.assertIn('reason over the (representation, label)\npairs yourself', system_prompt('reasoned'))
+        self.assertNotIn('representation', system_prompt('full'))
+        self.assertIn('predict() your network on labeled images, labels() on the same indices', prompt)
         specs = {t['name']: t['description'] for t in tool_specs('reasoned', writable_names(start))}
         self.assertTrue(specs['evaluate'].startswith('Accuracy (one number)'))
         self.assertIn('last 10,000 characters', specs['tools'])
         self.assertIn('evaluate() and submit() check', prompt)
         self.assertIn('submit() check', user_prompt(TASKS['scratch-cifar10'], 'blind', start, 0, 10000))
+
+
+class PredictTests(unittest.TestCase):
+    @staticmethod
+    def parse(text):
+        head, *rows = text.splitlines()
+        return head, {int(r.split(' ')[0].rstrip(':')): [float(v) for v in r.split(': ', 1)[1].split()] for r in rows}
+
+    def test_fc_and_intermediate_layers_match_the_network(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            weights, _ = apply_diff(ep.start, BIAS['weights'], 10000)
+            text, err = ep.call('predict', {**BIAS, 'indices': [0, 3], 'layer': 'fc', 'channels': None})
+            self.assertFalse(err)
+            head, rows = self.parse(text)
+            self.assertIn('10 logits per image', head)
+            want = layer_outputs(weights, ep.images[[0, 3]], 'fc', 10)
+            for k, i in enumerate([0, 3]):
+                self.assertTrue(torch.allclose(torch.tensor(rows[i]), want[k], rtol=6e-3, atol=1e-6))
+                self.assertIn(f'{i} [{CLASSES[int(want[k].argmax())]}]:', text)
+            text, err = ep.call('predict', {'weights': [], 'indices': [1, 2, 4], 'layer': 'layer4', 'channels': [5, 13]})
+            head, rows = self.parse(text)
+            self.assertIn('channels 5..12', head)
+            self.assertEqual([len(v) for v in rows.values()], [8, 8, 8])
+            pooled = layer_outputs(ep.start, ep.images[[1, 2, 4]], 'avgpool', 10)[:, 5:13]
+            self.assertTrue(torch.allclose(torch.tensor([rows[i] for i in (1, 2, 4)]), pooled, rtol=6e-3, atol=1e-6))
+            _, rows = self.parse(ep.call('predict', {'weights': [], 'indices': [0], 'layer': 'layer2.0.bn1',
+                                                     'channels': None})[0])
+            self.assertEqual(len(rows[0]), 128)
+            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
+
+    def test_diff_is_used_and_phase_rules(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            push = {'weights': [{'name': 'fc.bias', 'values': [0] * 3 + [1e4] + [0] * 6}]}
+            text, _ = ep.call('predict', {**push, 'indices': [0, 1, 2], 'layer': 'fc', 'channels': None})
+            self.assertEqual(text.count('[c3]'), 3)
+            text, err = ep.call('predict', {'weights': [], 'indices': [12], 'layer': 'fc', 'channels': None})
+            self.assertTrue(err)
+            self.assertIn('visible only in phase 2', text)
+            ep.call('end_tools', {})
+            self.assertFalse(ep.call('predict', {'weights': [], 'indices': [12, 19], 'layer': 'fc',
+                                                 'channels': None})[1])
+            self.assertEqual(audit('reasoned', ep.log, pool=10), [])
+            self.assertIn('predict on labeled-set images before end_tools',
+                          audit('reasoned', [{'call': 'predict', 'executed': True, 'args': {'indices': [12]}}],
+                                pool=10)[0])
+
+    def test_bad_requests(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('full', tmp)
+            base = {'weights': [], 'indices': [0], 'layer': 'fc', 'channels': None}
+            cases = [({'layer': 'nope'}, 'failed', 'unknown layer'),
+                     ({'layer': 'layer4', 'indices': list(range(12))}, 'failed', 'at most 6000'),
+                     ({'layer': 'layer4', 'channels': [8, 3]}, 'failed', 'channels must be'),
+                     ({'indices': []}, 'failed', 'give 1 to 500'),
+                     ({'weights': [{'name': 'fc.bias', 'values': [0.0] * 9}]}, 'format', 'got 9 numbers')]
+            for change, status, message in cases:
+                with self.subTest(change):
+                    text, err = ep.call('predict', {**base, **change})
+                    self.assertTrue(err)
+                    self.assertEqual(ep.log[-1]['status'], status)
+                    self.assertIn(message, text)
+            self.assertFalse(ep.call('predict', {**base, 'indices': [0, 19]})[1])
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            self.assertIn('not available', episode('blind', tmp).call('predict', base)[0])
+
+    def test_predict_schema_and_docs(self):
+        specs = {t['name']: t for t in tool_specs('reasoned', writable_names(initial_weights(10)))}
+        schema = specs['predict']['input_schema']
+        self.assertEqual(schema['required'], ['weights', 'indices', 'layer', 'channels'])
+        self.assertIn('Phase 2: any image', specs['predict']['description'])
+        self.assertIn('predict() on any index', episode_text_end_tools())
+
+
+def episode_text_end_tools():
+    with tempfile.TemporaryDirectory() as tmp:
+        return episode('reasoned', tmp).call('end_tools', {})[0]
 
 
 class EndToEndTests(unittest.TestCase):
@@ -408,7 +487,10 @@ class EndToEndTests(unittest.TestCase):
                 'turn 4 [phase 2]: tools (refused: tools() is permanently disabled: end_tools() has been called)',
                 'turn 5 [phase 2]: labels',
                 'turn 6 [phase 2]: submit'])
-            self.assertTrue((out / 'transcript.json').exists() and (out / 'usage.json').exists())
+            self.assertTrue((out / 'usage.json').exists())
+            pending = json.loads((out / 'transcript.json').read_text())[-1]
+            self.assertEqual(pending['role'], 'pending_tool_results')
+            self.assertTrue(pending['content'][-1]['content'].startswith('accepted'))
             self.assertEqual(json.loads((out / 'audit.json').read_text()), {'clean': True, 'problems': []})
             calls = json.loads((out / 'calls.json').read_text())
             self.assertEqual([(c['call'], c['executed']) for c in calls],

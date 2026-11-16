@@ -221,7 +221,7 @@ def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
                      if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
             results = f'{nudge}\n\n{turn_note(episode, turn, max_turns, True, retries)}'
             if on_turn:
-                on_turn(turn, True)
+                on_turn(turn, True, results)
             continue
         first = len(episode.log)
         results = []
@@ -236,9 +236,10 @@ def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
             turn += 1
         else:
             retries -= 1
+        if episode.submission is None:
+            call_id, text, error = results[-1]
+            results[-1] = (call_id, f'{text}\n\n{turn_note(episode, turn, max_turns, counted, retries)}', error)
         if on_turn:
-            on_turn(turn, counted)
+            on_turn(turn, counted, results)
         if episode.submission is not None:
             return
-        call_id, text, error = results[-1]
-        results[-1] = (call_id, f'{text}\n\n{turn_note(episode, turn, max_turns, counted, retries)}', error)
