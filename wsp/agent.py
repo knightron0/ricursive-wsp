@@ -55,6 +55,22 @@ class AnthropicAgent:
         return types
 
 
+def strict_schema(schema):
+    if not isinstance(schema, dict):
+        return schema
+    schema = {k: strict_schema(v) if k == 'items' else v for k, v in schema.items()}
+    if schema.get('type') != 'object' or 'properties' not in schema:
+        return schema
+    required, properties = set(schema.get('required', [])), {}
+    for key, sub in schema['properties'].items():
+        sub = strict_schema(sub)
+        kinds = sub.get('type') if isinstance(sub.get('type'), list) else [sub.get('type')]
+        if key not in required and 'null' not in kinds:
+            sub = {**sub, 'type': kinds + ['null']}
+        properties[key] = sub
+    return {**schema, 'properties': properties, 'required': list(properties)}
+
+
 class OpenAIAgent:
     """OpenAI via the Responses API: function tools, text-only input, stateless (store=False)."""
 
@@ -64,7 +80,7 @@ class OpenAIAgent:
         self.system, self.model, self.max_tokens = system, model, max_tokens
         self.reasoning = {'effort': effort} if effort else None
         self.tools = [{'type': 'function', 'name': t['name'], 'description': t['description'],
-                       'parameters': t['input_schema'], 'strict': True} for t in tools]
+                       'parameters': strict_schema(t['input_schema']), 'strict': True} for t in tools]
         self.input = [{'role': 'user', 'content': prompt}]
         self.usage = []
 

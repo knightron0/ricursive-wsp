@@ -246,10 +246,78 @@ class DiffTests(unittest.TestCase):
                               ([{'name': 'fc.bias', 'values': [0] * 9}], 'needs 10'),
                               ([{'name': 'fc.bias', 'values': [float('inf')] * 10}], 'NaN or inf'),
                               ([{'name': 'bn1.running_var', 'values': [-1] * 64}], 'non-negative'),
-                              (BIAS['weights'] * 2, 'twice'),
-                              ([{'name': 'conv1.weight', 'values': [0] * 1728}], 'limit is 100')]:
+                              ([{'name': 'conv1.weight', 'values': [0] * 1728}], 'limit is 100'),
+                              ([{'name': 'fc.bias', 'values': [0] * 10, 'fill': 0}], 'exactly one of'),
+                              ([{'name': 'fc.bias'}], 'exactly one of'),
+                              ([{'name': 'fc.bias', 'values': [0] * 10, 'scale': 2}], 'unknown keys'),
+                              ([{'name': 'fc.weight', 'index': [[0, 11]], 'fill': 0}], 'axis 0 range'),
+                              ([{'name': 'fc.weight', 'index': [[3, 3]], 'fill': 0}], 'start < stop'),
+                              ([{'name': 'fc.weight', 'index': [[0, 1.5]], 'fill': 0}], 'integers'),
+                              ([{'name': 'fc.weight', 'index': [[0, 1]] * 3, 'fill': 0}], 'list of 1 to 2'),
+                              ([{'name': 'fc.weight', 'index': [], 'fill': 0}], 'list of 1 to 2'),
+                              ([{'name': 'fc.weight', 'index': [[0, 1]], 'values': [0] * 51}],
+                               r'fc.weight \[0:1\]: got 51 numbers, block \[1, 512\] needs 512'),
+                              ([{'name': 'bn1.running_var', 'index': [[0, 4]], 'fill': -1}], 'non-negative'),
+                              ([{'name': 'fc.bias', 'fill': float('nan')}], 'NaN or inf'),
+                              ([{'name': 'fc.bias', 'fill': 'x'}], 'fill must be a number'),
+                              ([{'name': 'fc.bias', 'fill': True}], 'fill must be a number')]:
             with self.subTest(pattern), self.assertRaisesRegex(ValueError, pattern):
                 apply_diff(start, diff, 100)
+
+    def test_blocks_and_fill_apply_in_order(self):
+        start = initial_weights(10)
+        before = {k: v.clone() for k, v in start.items()}
+        diff = [{'name': 'layer2.0.shortcut.0.weight', 'fill': 0},
+                {'name': 'layer2.0.shortcut.0.weight', 'index': [[0, 10]], 'values': list(range(640))},
+                {'name': 'fc.weight', 'index': [[0, 10], [37, 38]], 'values': [1.0] * 10},
+                {'name': 'fc.bias', 'index': [[2, 4]], 'fill': 5},
+                {'name': 'conv1.weight', 'index': [[5, 6], [1, 2]], 'values': [list(range(3))] * 3}]
+        w, n = apply_diff(start, diff, 10000)
+        self.assertEqual(n, 1 + 640 + 10 + 1 + 9)
+        shortcut = w['layer2.0.shortcut.0.weight']
+        self.assertTrue(torch.equal(shortcut[:10].flatten(), torch.arange(640, dtype=torch.float32)))
+        self.assertTrue((shortcut[10:] == 0).all())
+        self.assertTrue((w['fc.weight'][:, 37] == 1).all())
+        others = torch.ones(512, dtype=torch.bool)
+        others[37] = False
+        self.assertTrue(torch.equal(w['fc.weight'][:, others], start['fc.weight'][:, others]))
+        self.assertTrue((w['fc.bias'][2:4] == 5).all())
+        self.assertTrue(torch.equal(w['fc.bias'][[0, 1, 4, 5, 6, 7, 8, 9]], start['fc.bias'][[0, 1, 4, 5, 6, 7, 8, 9]]))
+        self.assertTrue(torch.equal(w['conv1.weight'][5, 1], torch.tensor([[0., 1, 2]] * 3)))
+        rest = w['conv1.weight'].clone()
+        rest[5, 1] = start['conv1.weight'][5, 1]
+        self.assertTrue(torch.equal(rest, start['conv1.weight']))
+        self.assertTrue(all(torch.equal(start[k], before[k]) for k in start))
+        self.assertTrue(torch.equal(w['bn1.weight'], start['bn1.weight']))
+
+    def test_fill_counts_one_and_null_keys_are_absent(self):
+        start = initial_weights(10)
+        w, n = apply_diff(start, [{'name': 'conv1.weight', 'fill': 0.5}], 1)
+        self.assertEqual(n, 1)
+        self.assertTrue((w['conv1.weight'] == 0.5).all())
+        w, n = apply_diff(start, [{'name': 'fc.bias', 'index': None, 'values': None, 'fill': 3}], 10)
+        self.assertTrue((w['fc.bias'] == 3).all())
+        with self.assertRaisesRegex(ValueError, 'limit is 1'):
+            apply_diff(start, [{'name': 'conv1.weight', 'fill': 0}, {'name': 'fc.bias', 'fill': 0}], 1)
+
+    def test_submit_counts_distinct_tensors_and_log_labels_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = episode('blind', tmp)
+            diff = [{'name': 'fc.weight', 'fill': 0}, {'name': 'fc.weight', 'index': [[0, 10], [3, 4]],
+                                                       'values': [1] * 10}, {'name': 'fc.bias', 'fill': 2}]
+            text, err = ep.call('submit', {'weights': diff})
+            self.assertFalse(err)
+            self.assertEqual(text, 'accepted: 12 numbers in 2 tensors')
+            self.assertEqual(ep.log[-1]['args']['weights'], ['fc.weight = 0', 'fc.weight [0:10, 3:4]', 'fc.bias = 2'])
+
+    def test_openai_strict_schema_makes_optional_keys_nullable(self):
+        from wsp.agent import strict_schema
+        spec = next(t for t in tool_specs('reasoned', writable_names(initial_weights(10))) if t['name'] == 'predict')
+        entry = strict_schema(spec['input_schema'])['properties']['weights']['items']
+        self.assertEqual(entry['required'], ['name', 'index', 'values', 'fill'])
+        self.assertEqual(entry['properties']['fill']['type'], ['number', 'null'])
+        self.assertEqual(entry['properties']['name']['type'], 'string')
+        self.assertEqual(strict_schema(spec['input_schema'])['properties']['channels']['type'], ['array', 'null'])
 
     def test_all_problems_reported_together(self):
         start = initial_weights(10)

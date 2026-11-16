@@ -27,6 +27,7 @@ import sys
 import torch
 
 from wsp.evaluation import evaluate, layer_outputs
+from wsp.tasks import entry_label
 
 ROOT = Path(__file__).resolve().parent.parent
 MODES = ('blind', 'reasoned', 'full')
@@ -172,11 +173,11 @@ class Episode:
 
     def _submit(self, args):
         if not args.get('weights'):
-            raise FormatError('the diff is empty: it would leave the start network unchanged. Write the tensors you '
-                              'want to set, every number in them')
+            raise FormatError('the diff is empty: it would leave the start network unchanged. Write the tensors or '
+                              'blocks you want to set')
         weights, numbers = self._diff(args)
         self.submission = weights
-        return f'accepted: {numbers} numbers in {len(args["weights"])} tensors'
+        return f'accepted: {numbers} numbers in {len({e["name"] for e in args["weights"]})} tensors'
 
 
 def clip(text, limit=2000):
@@ -188,7 +189,7 @@ def clip(text, limit=2000):
 def _summary(args):
     if 'weights' in args and isinstance(args['weights'], list):
         return {**{k: v for k, v in args.items() if k != 'weights'},
-                'weights': [e.get('name') if isinstance(e, dict) else '?' for e in args['weights']]}
+                'weights': [entry_label(e) for e in args['weights']]}
     return args
 
 

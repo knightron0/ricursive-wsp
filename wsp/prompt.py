@@ -9,10 +9,11 @@ from wsp.toolkit import DOC as TOOLKIT_DOC
 
 SYSTEM = """You are doing weight-space programming: you write the weights of a ResNet-18 directly,
 as literal numbers, instead of training it. Your final answer is one submit() call with a diff:
-the tensors you want to change and every number in them. Tensors you leave out keep their start
-values. The submitted network is then scored on held-out images you never see.
+the tensors, or blocks of tensors, you want to change and the numbers to put there, or a constant
+to fill them with. Everything you leave out keeps its start values. The submitted network is then
+scored on held-out images you never see.
 
-Write each tensor's values flat in row-major (C) order of its shape, e.g. a conv weight
+Write values flat in row-major (C) order of the tensor's or block's shape, e.g. a conv weight
 [out, in, kh, kw] goes out-channel by out-channel. Every number costs output tokens."""
 
 REASONED_SYSTEM = """In this episode, phase 2 (after end_tools()) is where you learn from labels, and we expect you
@@ -37,8 +38,8 @@ MODE_RULES = {
             'disabled).',
 }
 
-CHECKED = ("The diff is checked first (tensor names, number counts, finite values, running_var >= 0, the budget); if "
-           'anything is wrong, every problem is listed and nothing runs.')
+CHECKED = ('The diff is checked first (tensor names, block ranges, number counts, finite values, running_var >= 0, the '
+           'budget); if anything is wrong, every problem is listed and nothing runs.')
 
 CALL_DOCS = {
     'data': 'Pixels of training-subset images by index, as text. For each image: a line "image i:", then 96 lines '
@@ -89,10 +90,13 @@ def tools_doc(timeout, device):
 
 
 def tool_specs(mode, names, timeout=300, device='cpu'):
-    diff = {'type': 'object', 'required': ['weights'], 'additionalProperties': False, 'properties': {'weights': {
-        'type': 'array', 'items': {'type': 'object', 'required': ['name', 'values'], 'additionalProperties': False,
-                                   'properties': {'name': {'type': 'string', 'enum': list(names)},
-                                                  'values': {'type': 'array', 'items': {'type': 'number'}}}}}}}
+    entry = {'type': 'object', 'required': ['name'], 'additionalProperties': False,
+             'properties': {'name': {'type': 'string', 'enum': list(names)},
+                            'index': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'integer'}}},
+                            'values': {'type': 'array', 'items': {'type': 'number'}},
+                            'fill': {'type': 'number'}}}
+    diff = {'type': 'object', 'required': ['weights'], 'additionalProperties': False,
+            'properties': {'weights': {'type': 'array', 'items': entry}}}
     indices = {'type': 'object', 'required': ['indices'], 'additionalProperties': False,
                'properties': {'indices': {'type': 'array', 'items': {'type': 'integer'}}}}
     predict = {'type': 'object', 'required': ['weights', 'indices', 'layer', 'channels'], 'additionalProperties': False,
@@ -129,14 +133,26 @@ def budget_rules(soft_budget):
 def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     calls = 'submit()' if mode == 'blind' else 'predict(), evaluate() and submit()'
     lines = ['# Diffs and costs',
-             '- A diff is a list of {"name", "values"}: each tensor you change, with every one of its numbers, flat in '
-             'row-major (C) order of its shape (nested lists are flattened). Tensors you leave out keep their start '
-             f'values. A diff may hold at most {max_numbers:,} numbers in total; num_batches_tracked entries are not '
-             'writable.',
+             '- A diff is a list of entries, applied in order; where two entries write the same element, the later one '
+             'wins. Each entry names one writable tensor and sets all of it or one block of it:\n'
+             '  - {"name", "values"}: every number of the tensor, flat in row-major (C) order of its shape (nested '
+             'lists are flattened).\n'
+             '  - {"name", "index", "values"}: a block. index is a list of [start, stop] integer pairs (stop '
+             'excluded), one per leading axis; axes after the last pair are taken whole. values are the block\'s '
+             'numbers, row-major over the block. E.g. {"name": "fc.weight", "index": [[0, 10], [37, 38]], "values": '
+             '[10 numbers]} sets column 37 of fc.weight, and {"name": "conv1.weight", "index": [[5, 6]], "values": '
+             '[27 numbers]} sets filter 5 of conv1.\n'
+             '  - {"name", "fill": c} or {"name", "index", "fill": c}: every element of the tensor or block set to '
+             'the number c.\n'
+             '  Elements no entry writes keep their start values. num_batches_tracked entries are not writable.',
+             f'- A diff may hold at most {max_numbers:,} numbers in total, counting every number in "values" and 1 '
+             'for each "fill".',
              f'- {calls} {"takes" if mode == "blind" else "each take"} a whole diff, so every call carries all of its '
-             'numbers again. Every number costs output tokens: keep diffs compact (small integers are cheap).',
-             f'- {calls} {"checks" if mode == "blind" else "check"} the diff first (tensor names, number counts, finite '
-             'values, running_var >= 0, the budget) and list every problem; nothing runs until the diff passes.']
+             'numbers again. Every number costs output tokens: keep diffs compact (small integers are cheap; a fill '
+             'is one number however large its block).',
+             f'- {calls} {"checks" if mode == "blind" else "check"} the diff first (tensor names, block ranges, number '
+             'counts, finite values, running_var >= 0, the budget) and list every problem, entry by entry; nothing '
+             'runs until the diff passes.']
     if max_tokens and hard_cap:
         lines.append(f'- Each reply of yours is limited to {max_tokens:,} output tokens, thinking included. A reply '
                      'that hits the limit ends the episode with no score.')

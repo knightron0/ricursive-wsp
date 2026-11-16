@@ -97,39 +97,76 @@ def writable_names(weights):
     return [name for name, t in weights.items() if t.is_floating_point()]
 
 
-def apply_diff(start, diff, max_numbers):
-    """Return start weights with the diff's literals written in, plus how many numbers it set.
+def entry_label(entry):
+    if not isinstance(entry, dict):
+        return '?'
+    index = entry.get('index')
+    label = str(entry.get('name'))
+    if isinstance(index, list) and all(isinstance(r, list) and len(r) == 2 for r in index):
+        label += ' [' + ', '.join(f'{a}:{b}' for a, b in index) + ']'
+    return label + (f' = {entry["fill"]}' if entry.get('fill') is not None else '')
 
-    `diff` is [{"name": ..., "values": [...]}]: every number of that tensor, flat in row-major
-    order (nested lists are flattened). Tensors not listed keep their start values."""
+
+def parse_index(index, shape):
+    if not isinstance(index, list) or not 1 <= len(index) <= len(shape):
+        return None, f'index must be a list of 1 to {len(shape)} [start, stop] pairs, one per leading axis of {shape}'
+    block = []
+    for axis, (r, size) in enumerate(zip(index, shape)):
+        if not (isinstance(r, list) and len(r) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in r)
+                and 0 <= r[0] < r[1] <= size):
+            return None, f'axis {axis} range {r} must be [start, stop] integers with 0 <= start < stop <= {size}'
+        block.append(slice(r[0], r[1]))
+    return tuple(block), None
+
+
+def apply_diff(start, diff, max_numbers):
     if not isinstance(diff, list):
-        raise ValueError('weights must be a list of {"name", "values"}')
+        raise ValueError('weights must be a list of entries {"name", "values"}, {"name", "fill"}, '
+                         '{"name", "index", "values"} or {"name", "index", "fill"}')
     writable, result, total = set(writable_names(start)), {k: v.clone() for k, v in start.items()}, 0
-    seen, problems = set(), []
+    problems = []
     for entry in diff:
+        entry = {k: v for k, v in entry.items() if v is not None} if isinstance(entry, dict) else entry
         name = entry.get('name') if isinstance(entry, dict) else None
         if name not in writable:
             problems.append(f'{name!r} is not a writable tensor name')
             continue
-        if name in seen:
-            problems.append(f'{name} is listed twice')
+        label, ref = entry_label(entry), start[name]
+        extra = set(entry) - {'name', 'index', 'values', 'fill'}
+        if extra:
+            problems.append(f'{label}: unknown keys {sorted(extra)}')
             continue
-        seen.add(name)
+        if ('values' in entry) == ('fill' in entry):
+            problems.append(f'{label}: give exactly one of "values" or "fill"')
+            continue
+        block, error = parse_index(entry['index'], list(ref.shape)) if 'index' in entry else ((), None)
+        if error:
+            problems.append(f'{label}: {error}')
+            continue
+        target = result[name][block]
         try:
-            tensor = torch.tensor(entry.get('values'), dtype=torch.float32).flatten()
+            if 'fill' in entry:
+                if not isinstance(entry['fill'], (int, float)) or isinstance(entry['fill'], bool):
+                    raise TypeError(f'fill must be a number, got {entry["fill"]!r}')
+                tensor = torch.full(target.shape, float(entry['fill']))
+                count = 1
+            else:
+                tensor = torch.tensor(entry['values'], dtype=torch.float32).flatten()
+                count = tensor.numel()
         except (TypeError, ValueError, RuntimeError) as e:
-            problems.append(f'{name}: values must be numbers ({e})')
+            problems.append(f'{label}: values must be numbers ({e})')
             continue
-        ref = start[name]
-        if tensor.numel() != ref.numel():
-            problems.append(f'{name}: got {tensor.numel()} numbers, shape {list(ref.shape)} needs {ref.numel()}')
+        if 'values' in entry and tensor.numel() != target.numel():
+            needs = (f'shape {list(ref.shape)} needs {ref.numel()}' if 'index' not in entry
+                     else f'block {list(target.shape)} needs {target.numel()}')
+            problems.append(f'{label}: got {tensor.numel()} numbers, {needs}')
         elif not torch.isfinite(tensor).all():
-            problems.append(f'{name}: contains NaN or inf')
+            problems.append(f'{label}: contains NaN or inf')
         elif name.endswith('running_var') and (tensor < 0).any():
-            problems.append(f'{name}: running_var must be non-negative')
+            problems.append(f'{label}: running_var must be non-negative')
         else:
-            result[name] = tensor.view(ref.shape).contiguous()
-            total += tensor.numel()
+            result[name][block] = tensor.view(target.shape)
+            total += count
     if total > max_numbers:
         problems.append(f'{total} numbers in the diff; the limit is {max_numbers}')
     if len(problems) > 1:

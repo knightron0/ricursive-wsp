@@ -1,8 +1,8 @@
 # ricursive-wsp: weight-space programming
 
 An agent writes the weights of a ResNet-18 as **literal numbers**. Its one answer is a diff over
-the initialized network: the tensors it wants to change, with every value. Tensors it leaves out
-keep their start values. The submitted network is scored once on held-out val (and test), which
+the initialized network: the tensors, or blocks of tensors, it wants to change, with every value
+or a constant fill. Everything it leaves out keeps its start values. The submitted network is scored once on held-out val (and test), which
 the agent never sees. Everything the agent sees is text: no image blocks, no vision encoder.
 
 ## Calls
@@ -17,8 +17,19 @@ the agent never sees. Everything the agent sees is text: no image blocks, no vis
 | `evaluate(weights)` | accuracy, loss, per-class accuracy and confusion of a diff on the training subset (aggregates only); in `reasoned`, the accuracy alone | harness |
 | `submit(weights)` | validation result; a valid diff ends the episode | harness |
 
-`predict()`, `evaluate()` and `submit()` check the diff's format first (tensor names, number counts, finite values, the
-`--max-numbers` budget) and list every problem; a call that fails the check is logged with status `format` and
+A diff is a list of entries applied in order (a later entry overwrites an earlier one where they overlap):
+
+| Entry | Sets |
+|---|---|
+| `{"name", "values"}` | the whole tensor, every number, flat in row-major order |
+| `{"name", "index", "values"}` | a block: `index` is one `[start, stop)` pair per leading axis (later axes whole); `values` are the block's numbers, row-major |
+| `{"name", "fill": c}`, `{"name", "index", "fill": c}` | every element of the tensor or block to `c` |
+
+Toward the `--max-numbers` budget, every number in `values` counts and each fill counts as 1. Null keys count as
+absent (the OpenAI backend sends strict schemas, so unused keys arrive as null).
+
+`predict()`, `evaluate()` and `submit()` check the diff's format first (tensor names, block ranges, number counts,
+finite values, the `--max-numbers` budget) and list every problem, entry by entry; a call that fails the check is logged with status `format` and
 nothing is scored or submitted.
 
 ## Turns
@@ -108,4 +119,5 @@ invalid input; results longer than 2,000 characters keep their head and tail), `
 final `pending_tool_results` (or `pending_user_message`) entry of `transcript.json`. Stdout gets one line per turn: that turn's calls
 with their status, the phase (`reasoned`), wall time, and tokens and cost when the provider reports them, e.g.
 `turn 36 [phase 1->2]: tools, end_tools | 81s | in 52.0k (50.0k cached), out 3.1k, $0.061`.
-A diff with several invalid tensors is rejected with all of them listed.
+A diff with several invalid entries is rejected with all of them listed, each named by tensor and block (e.g.
+`fc.weight [0:10, 37:38]: got 9 numbers, block [10, 1] needs 10`).
