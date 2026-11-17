@@ -151,7 +151,8 @@ class SDKRun:
         async def deny_others(name, args, context):
             return PermissionResultDeny(message=f'{name} is not available in this episode')
 
-        env = {'MCP_TOOL_TIMEOUT': str((6 * 60 if self.window['limit'] else 30) * 60 * 1000)}
+        env = {'MCP_TOOL_TIMEOUT': str((6 * 60 if self.window['limit'] else 30) * 60 * 1000),
+               'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1'}
         if self.max_tokens:
             env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(self.max_tokens)
         return ClaudeAgentOptions(

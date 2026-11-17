@@ -19,7 +19,7 @@ REASONED_SYSTEM = """In this episode, phase 2 (after end_tools()) is where you l
 to do that learning in your own context. No code runs in phase 2, but predict() does: give it a diff and image
 indices, and it returns your network's representation of each image, either the final logits or the output of any
 intermediate layer. Call labels() on the same indices, and reason over the (representation, label)
-pairs yourself: which features or outputs go with which class, which of your output rows or clusters stand for which
+pairs yourself: which features or outputs go with which class, which of your output rows stand for which
 class, what weights would separate the classes. Then write the resulting numbers in your diff. Plan phase 1 so that
 this works: build representations in phase 1 that you can read and reason about in phase 2, and print every number
 you will want to reuse before end_tools(). data() shows the images themselves. evaluate() returns only an accuracy,
@@ -199,12 +199,12 @@ def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=No
         'labels in your own context in phase 2:\n'
         '1. Phase 1: with code on the unlabeled images, build a network (a diff) whose representations carry the '
         'information you will need, in a form you can read and reason about in phase 2: for example fc outputs that '
-        'score unsupervised clusters, or a small set of channels you understand. Print every number you will want to '
+        'score, or a small set of channels you understand. Print every number you will want to '
         'reuse, since no code runs after end_tools().\n'
         '2. Call end_tools().\n'
         '3. Phase 2: call predict() with your diff on many images, and labels() on the same indices. Reason over the '
         '(representation, label) pairs in your own context: which features or outputs go with which class, which '
-        'output rows or clusters stand for which class, what weights would separate the classes. Write the resulting '
+        'output rows stand for which class, what weights would separate the classes. Write the resulting '
         "numbers into your diff. evaluate() gives a diff's accuracy (one number) if you want to compare candidates.\n"
         '4. submit() your final diff.\n' + pacing,
     ])
