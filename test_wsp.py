@@ -723,6 +723,27 @@ class SDKBackendTests(unittest.TestCase):
             self.assertIn('usage hold: five-hour window 50% used >= limit 40%', out.getvalue())
             self.assertEqual(len(window['holds']), 1)
 
+    def test_full_mode_prompt_has_no_reasoned_language(self):
+        from wsp.sdk_agent import sdk_system
+        start = initial_weights(10)
+        prompt = user_prompt(TASKS['scratch-cifar10'], 'full', start, 20, 10000, max_tokens=96000,
+                             soft_budget=960000, turn_limit=100)
+        specs = tool_specs('full', writable_names(start))
+        text = (system_prompt('full') + prompt + json.dumps(specs) + sdk_system([t['name'] for t in specs])).lower()
+        for word in ('end_tools', 'phase 1', 'phase 2', 'two phases', 'reasoned', 'labeled set', 'in any mode'):
+            self.assertNotIn(word, text)
+        for part in ('# How this episode works (mode full)', 'There is a single phase', 'from the start, as often and '
+                     'in any order you like', 'Your tools() code can read every label', 'the start network scores '
+                     'about 10%, chance', '# What we want you to do\nSubmit the network with the highest held-out'):
+            self.assertIn(part, prompt)
+        tools_text = next(t['description'] for t in specs if t['name'] == 'tools')
+        self.assertIn('"labels": int64 tensor [N] of class indices', tools_text)
+        reasoned_tools = next(t['description'] for t in tool_specs('reasoned', writable_names(start))
+                              if t['name'] == 'tools')
+        self.assertIn('; no labels', reasoned_tools)
+        self.assertNotIn('"labels"', reasoned_tools)
+        self.assertIn('mcp__wsp__end_tools', sdk_system([t['name'] for t in tool_specs('reasoned', writable_names(start))]))
+
     def test_turn_limit_prompt(self):
         start = initial_weights(10)
         prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_tokens=96000,

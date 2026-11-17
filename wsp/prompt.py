@@ -33,9 +33,6 @@ def system_prompt(mode):
 MODE_RULES = {
     'blind': 'Mode blind: you have no data. Available: tools(), submit(). Everything must come from your own '
              'knowledge. In tools() code, `data` is None. No gradients in any mode.',
-    'full': 'Mode full: available: data(), labels(), tools(), predict(), evaluate(), submit(). In tools() code, '
-            '`data` = {"images", "labels", "classes"}. No gradients in any mode (autograd and torch.optim are '
-            'disabled).',
 }
 
 CHECKED = ('The diff is checked first (tensor names, block ranges, number counts, finite values, running_var >= 0, the '
@@ -78,13 +75,22 @@ REASONED_CALL_DOCS = {
 }
 
 
-def tools_doc(timeout, device):
+DATA_DOCS = {
+    'blind': '`data` is None (there is no training data)',
+    'reasoned': '`data`: {"images": uint8 tensor [N, 3, 32, 32], "classes": list of class names}, where '
+                'data["images"][i] is image i of every call; no labels',
+    'full': '`data`: {"images": uint8 tensor [N, 3, 32, 32], "labels": int64 tensor [N] of class indices into '
+            '"classes", "classes": list of class names}, where data["images"][i] is image i of every call and '
+            'data["labels"][i] is its class',
+}
+
+
+def tools_doc(timeout, device, mode='reasoned'):
     return ('Run Python in a sandbox. Each call is a fresh process that runs for at most '
             f'{timeout:g} s on {device}; files you write in the working directory persist across calls (add "." to '
             'sys.path to import your own modules from there). Preloaded: torch, math, toolkit; `start`, the start '
-            'state_dict {name: tensor}; `data`: {"images": uint8 tensor [N, 3, 32, 32], "classes": list of class names} '
-            'where data["images"][i] is image i of every call (in full mode also "labels"; in blind mode `data` is '
-            'None). No network, no subprocesses, no threads, no files outside the working directory, no gradients. '
+            f'state_dict {{name: tensor}}; {DATA_DOCS[mode]}. '
+            'No network, no subprocesses, no threads, no files outside the working directory, no gradients. '
             f'Returns only the last {MAX_OUTPUT_CHARS:,} characters of stdout+stderr, so print long outputs in several '
             'calls.\n' + TOOLKIT_DOC)
 
@@ -107,7 +113,7 @@ def tool_specs(mode, names, timeout=300, device='cpu'):
                'tools': {'type': 'object', 'required': ['code'], 'additionalProperties': False,
                          'properties': {'code': {'type': 'string'}}},
                'end_tools': {'type': 'object', 'required': [], 'additionalProperties': False, 'properties': {}}}
-    docs = {**CALL_DOCS, 'tools': tools_doc(timeout, device), **(REASONED_CALL_DOCS if mode == 'reasoned' else {})}
+    docs = {**CALL_DOCS, 'tools': tools_doc(timeout, device, mode), **(REASONED_CALL_DOCS if mode == 'reasoned' else {})}
     return [{'name': n, 'description': docs[n], 'input_schema': schemas[n], 'eager_input_streaming': True}
             for n in ('data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit') if n in ALLOWED[mode]]
 
@@ -211,6 +217,22 @@ def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=No
     ])
 
 
+def full_rules(n_examples, start_score=None):
+    return '\n\n'.join([
+        f'# How this episode works (mode full)\nYou have a training subset of {n_examples:,} labeled images, indices '
+        f'0..{n_examples - 1} (class-balanced, not in class order). Every call and the sandbox use the same indices: '
+        'data["images"][i] and data["labels"][i] in tools() code are image i and its class. There is a single phase: '
+        'data(), labels(), tools(), predict(), evaluate() and submit() are all available from the start, as often and '
+        'in any order you like, and only an accepted submit() ends the episode. Your tools() code can read every '
+        'label, and evaluate() reports accuracy, loss, per-class accuracy and confusion on the training subset.\n'
+        'The submitted network is scored once on held-out images that you never see; the start network scores '
+        + (f'{start_score:.1%} on the held-out validation images. ' if start_score is not None
+           else 'about 10%, chance. ') +
+        'No gradients anywhere: autograd, torch.optim and torch.func transforms are disabled.',
+        '# What we want you to do\nSubmit the network with the highest held-out accuracy you can.',
+    ])
+
+
 def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3, max_tokens=None,
                 soft_budget=None, warm=False, start_score=None, turn_limit=None):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
@@ -220,6 +242,8 @@ def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format
         pace = turns_rules(max_turns, format_retries)
     if mode == 'reasoned':
         rules = [reasoned_rules(n_examples, soft_budget, start_score, turn_limit, max_turns)]
+    elif mode == 'full':
+        rules = [full_rules(n_examples, start_score)]
     else:
         rules = [f'# {MODE_RULES[mode]}',
                  (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class '

@@ -7,9 +7,10 @@ import time
 SERVER = 'wsp'
 MAX_RESULT_CHARS = 500_000
 
-SDK_SYSTEM = """Each call above is a tool named mcp__wsp__<call>: mcp__wsp__data, mcp__wsp__labels, mcp__wsp__tools,
-mcp__wsp__end_tools, mcp__wsp__predict, mcp__wsp__evaluate, mcp__wsp__submit. If a tool result is too long to show
-inline and is saved to a file instead, open it with Read; Read works only on those saved tool outputs."""
+def sdk_system(names):
+    return (f'Each call above is a tool named mcp__{SERVER}__<call>: '
+            + ', '.join(f'mcp__{SERVER}__{n}' for n in names) + '. If a tool result is too long to show inline and is '
+            'saved to a file instead, open it with Read; Read works only on those saved tool outputs.')
 
 
 def tool_name(call):
@@ -158,7 +159,8 @@ class SDKRun:
             tools=['Read'], allowed_tools=[tool_name(s['name']) for s in self.specs] + ['Read'],
             mcp_servers={SERVER: build_server(self.episode, self.specs, self.turns, self.window)},
             strict_mcp_config=True,
-            system_prompt=f'{self.system}\n\n{SDK_SYSTEM}', setting_sources=[], skills=[], model=self.model,
+            system_prompt=f'{self.system}\n\n{sdk_system([s["name"] for s in self.specs])}', setting_sources=[], skills=[],
+            model=self.model,
             effort=self.effort, thinking={'type': 'adaptive', 'display': 'summarized'}, max_turns=self.max_turns,
             cwd=str(self.cwd), env=env, can_use_tool=deny_others,
             hooks={'PreToolUse': [HookMatcher(matcher='Read', hooks=[read_fence(self.cwd)])]})
