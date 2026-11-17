@@ -410,6 +410,74 @@ class TurnTests(unittest.TestCase):
                 return super().next(results)
         return Recorder(turns)
 
+    def test_sdk_turn_rules_in_the_episode_loop(self):
+        from wsp.agent import CUT_OFF
+
+        class CutThenWork:
+            def __init__(self):
+                self.cut_off, self.seen, self.step = False, [], 0
+
+            def next(self, results):
+                self.seen.append(results)
+                self.step += 1
+                if self.step == 1:
+                    self.cut_off = True
+                    return []
+                if self.step == 2:
+                    return [('a', 'evaluate', TurnTests.BAD), ('b', 'tools', {'code': 'print(1)'})]
+                return [('c', 'labels', {'indices': [0]})]
+
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            agent, turns = CutThenWork(), []
+            run_episode(agent, episode('reasoned', tmp), 3, lambda t, counted, r: turns.append((t, counted)), 3, 'sdk')
+            self.assertEqual(agent.seen[1], CUT_OFF)
+            self.assertEqual(turns, [(1, True), (2, True), (3, True)])
+            self.assertTrue(all(text.endswith('\n[harness] turn 2 of 3; 1 turns left after this one.')
+                                for _, text, _ in agent.seen[2]))
+            self.assertEqual(len(agent.seen[2]), 2)
+
+    def test_openrouter_cut_off_reply_continues(self):
+        from wsp.agent import OpenRouterAgent
+
+        class Response:
+            def __init__(self, finish):
+                message = {'role': 'assistant', 'content': None, 'reasoning': 'r',
+                           'tool_calls': [{'id': 'x', 'type': 'function',
+                                           'function': {'name': 'tools', 'arguments': '{"code": "pri'}}]}
+                self.choices = [type('C', (), {'finish_reason': finish,
+                                               'message': type('M', (), {'model_dump': lambda s, **k: dict(message)})()})()]
+                self.usage = None
+
+        with patch.dict('os.environ', {'OPENROUTER_API_KEY': 'x'}):
+            agent = OpenRouterAgent('s', 'p', [], continue_on_cap=True)
+            classic = OpenRouterAgent('s', 'p', [])
+        for a in (agent, classic):
+            a.client = type('Client', (), {})()
+            a.client.chat = type('Chat', (), {})()
+            a.client.chat.completions = type('Completions', (), {'create': lambda s, **k: Response('length')})()
+        self.assertEqual(agent.next(None), [])
+        self.assertTrue(agent.cut_off)
+        self.assertEqual(agent.messages[-1], {'role': 'assistant', 'content': '', 'reasoning': 'r'})
+        with self.assertRaisesRegex(RuntimeError, 'length'):
+            classic.next(None)
+
+    def test_openrouter_sdk_turn_rules_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--provider',
+                      'openrouter', '--turn-rules', 'sdk', '--max-turns', '100', '--data-dir', tmp, '--output',
+                      str(out), '--dry-run'])
+            user = json.loads((out / 'prompt.json').read_text())['user']
+            for part in ('# Turns and budget\nYou have 100 turns.', 'within about 960,000 output tokens',
+                         'calling end_tools() by about turn 50, and before', 'a reply that reaches it is cut off'):
+                self.assertIn(part, user)
+            self.assertNotIn('# Turns\n', user)
+            with redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--provider',
+                      'anthropic', '--turn-rules', 'sdk', '--data-dir', tmp, '--output', str(out) + '2', '--dry-run'])
+
     def test_format_only_replies_do_not_count(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             ep, turns = episode('reasoned', tmp), []

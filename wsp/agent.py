@@ -127,12 +127,14 @@ class OpenRouterAgent:
     Reasoning is passed back each turn (reasoning_details) so thinking carries across tool calls, and the
     system prompt plus the newest message carry cache_control breakpoints (Anthropic prompt caching)."""
 
-    def __init__(self, system, prompt, tools, model='anthropic/claude-opus-5.5', max_tokens=64000, effort=None):
+    def __init__(self, system, prompt, tools, model='anthropic/claude-opus-5.5', max_tokens=64000, effort=None,
+                 continue_on_cap=False):
         import os
         from openai import OpenAI
         self.client = OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY'],
                              timeout=3600, max_retries=8)
         self.model, self.max_tokens = model, max_tokens
+        self.continue_on_cap, self.cut_off = continue_on_cap, False
         self.reasoning = {'effort': effort} if effort else {'enabled': True}
         self.tools = [{'type': 'function', 'function': {'name': t['name'], 'description': t['description'],
                                                         'parameters': t['input_schema']}} for t in tools]
@@ -163,6 +165,11 @@ class OpenRouterAgent:
         message = {k: message[k] for k in ('role', 'content', 'tool_calls', 'reasoning', 'reasoning_details') if k in message}
         self.messages.append(message)
         self.usage.append(response.usage.model_dump() if response.usage else None)
+        if choice.finish_reason == 'length' and self.continue_on_cap:
+            message.pop('tool_calls', None)
+            message['content'] = message.get('content') or ''
+            self.cut_off = True
+            return []
         if choice.finish_reason in ('length', 'content_filter'):
             raise RuntimeError(f'reply stopped with {choice.finish_reason}')
         calls = []
@@ -225,17 +232,32 @@ def turn_note(episode, turn, max_turns, counted, retries_left):
     return note
 
 
-def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
-    results, turn, retries = None, 0, format_retries
+CUT_OFF = ('Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up '
+           'mid-thought if that is where the cut happened. Break remaining work into smaller pieces.')
+
+
+def sdk_note(turn, max_turns):
+    from wsp.sdk_agent import turn_note as note
+    return note({'reply': turn, 'limit': max_turns})
+
+
+def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3, style='classic'):
+    sdk = style == 'sdk'
+    results, turn, retries = None, 0, 0 if sdk else format_retries
     while turn < max_turns:
         calls = agent.next(results)
         if not calls:
             if isinstance(agent, ScriptedAgent) and not agent.turns:
                 return
             turn += 1
-            nudge = ('Call end_tools(), then submit() with your diff to finish.'
-                     if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
-            results = f'{nudge}\n\n{turn_note(episode, turn, max_turns, True, retries)}'
+            if getattr(agent, 'cut_off', False):
+                agent.cut_off = False
+                results = CUT_OFF
+            else:
+                nudge = ('Call end_tools(), then submit() with your diff to finish.'
+                         if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
+                note = sdk_note(turn, max_turns) if sdk else f'\n\n{turn_note(episode, turn, max_turns, True, retries)}'
+                results = nudge + note
             if on_turn:
                 on_turn(turn, True, results)
             continue
@@ -252,7 +274,9 @@ def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
             turn += 1
         else:
             retries -= 1
-        if episode.submission is None:
+        if sdk and episode.submission is None:
+            results = [(i, text + sdk_note(turn, max_turns), error) for i, text, error in results]
+        elif episode.submission is None:
             call_id, text, error = results[-1]
             results[-1] = (call_id, f'{text}\n\n{turn_note(episode, turn, max_turns, counted, retries)}', error)
         if on_turn:

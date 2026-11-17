@@ -102,6 +102,10 @@ def parse_args(argv=None):
                         'unless given; then every reply counts, the limit is enforced and stated in the prompt')
     p.add_argument('--format-retries', type=int, default=3,
                    help='Most replies that may go uncounted because every call in them was a format rejection')
+    p.add_argument('--turn-rules', choices=['classic', 'sdk'], default='classic',
+                   help='openrouter: "sdk" runs turns as the claude-sdk backend does: every reply counts, a reply cut '
+                        'off at --max-tokens continues (and counts), every result carries the turn note, and the '
+                        'prompt states the turn limit and the soft --token-budget')
     p.add_argument('--max-numbers', type=int, default=20000, help='Most numbers a diff may hold')
     p.add_argument('--tool-timeout', type=float, default=300)
     p.add_argument('--script', type=Path, help='Replay scripted calls instead of calling the API')
@@ -117,6 +121,8 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     if (a.mode == 'blind') != (a.data_fraction == 0) or not 0 <= a.data_fraction <= 1:
         p.error('blind takes --data-fraction 0; reasoned/full need --data-fraction in (0, 1]')
+    if a.turn_rules == 'sdk' and a.provider != 'openrouter':
+        p.error('--turn-rules sdk is for --provider openrouter (claude-sdk always works that way)')
     if a.max_turns is None and (a.provider != 'claude-sdk' or a.script):
         a.max_turns = 10
     if a.sdk_max_turns is None:
@@ -157,10 +163,11 @@ def main(argv=None):
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist()})
     sdk = a.provider == 'claude-sdk' and not a.script
+    sdk_rules = a.turn_rules == 'sdk' and not a.script
     system = system_prompt(a.mode)
     prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
-                         a.max_tokens, a.token_budget if sdk else None, warm=a.start_weights is not None,
-                         start_score=start_score, turn_limit=a.max_turns if sdk else None)
+                         a.max_tokens, a.token_budget if sdk or sdk_rules else None, warm=a.start_weights is not None,
+                         start_score=start_score, turn_limit=a.max_turns if sdk or sdk_rules else None)
     tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device())
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
@@ -180,7 +187,7 @@ def main(argv=None):
         agent = {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent}[a.provider](
             system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
                                                'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
-            a.max_tokens, a.effort)
+            a.max_tokens, a.effort, **({'continue_on_cap': True} if sdk_rules else {}))
 
     progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0, 'replies': 0}
 
@@ -214,7 +221,7 @@ def main(argv=None):
             agent.on_reply = sdk_reply
             asyncio.run(agent.run())
         else:
-            run_episode(agent, episode, a.max_turns, checkpoint, a.format_retries)
+            run_episode(agent, episode, a.max_turns, checkpoint, a.format_retries, 'sdk' if sdk_rules else 'classic')
     finally:
         save(out / 'calls.json', log)
         save_transcript()
