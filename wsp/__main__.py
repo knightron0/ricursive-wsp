@@ -23,7 +23,7 @@ import time
 import torch
 
 from wsp import data as datasets
-from wsp.agent import AnthropicAgent, OpenAIAgent, OpenRouterAgent, ScriptedAgent, run_episode
+from wsp.agent import AnthropicAgent, LocalAgent, OpenAIAgent, OpenRouterAgent, ScriptedAgent, run_episode
 from wsp.episode import MODES, Episode, audit
 from wsp.evaluation import evaluate, summarize
 from wsp.model import default_device
@@ -88,8 +88,9 @@ def parse_args(argv=None):
     p.add_argument('--mode', choices=MODES, required=True)
     p.add_argument('--data-fraction', type=float, default=0.0, help='Fraction (0, 1] of train (reasoned/full)')
     p.add_argument('--data-seed', type=int, default=0)
-    p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'claude-sdk', 'codex-sdk'],
+    p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'local', 'claude-sdk', 'codex-sdk'],
                    default='anthropic')
+    p.add_argument('--base-url', help='local: OpenAI-compatible server, e.g. http://blackwell1:30000')
     p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), '
                                    "anthropic/claude-opus-5.5 (openrouter), claude-opus-5-5 (claude-sdk), Codex's "
                                    'default model (codex-sdk)')
@@ -128,8 +129,10 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     if (a.mode == 'blind') != (a.data_fraction == 0) or not 0 <= a.data_fraction <= 1:
         p.error('blind takes --data-fraction 0; reasoned/full need --data-fraction in (0, 1]')
-    if a.turn_rules == 'sdk' and a.provider != 'openrouter':
-        p.error('--turn-rules sdk is for --provider openrouter (claude-sdk and codex-sdk always work that way)')
+    if a.provider == 'local' and not a.base_url:
+        p.error('--provider local needs --base-url')
+    if a.turn_rules == 'sdk' and a.provider not in ('openrouter', 'local'):
+        p.error('--turn-rules sdk is for --provider openrouter or local (claude-sdk and codex-sdk always work that way)')
     if a.max_turns is None and (a.provider not in SDK_PROVIDERS or a.script):
         a.max_turns = 10
     if a.sdk_max_turns is None:
@@ -196,10 +199,12 @@ def main(argv=None):
     elif a.script:
         agent = ScriptedAgent.from_file(a.script)
     else:
-        agent = {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent}[a.provider](
+        agent = {'anthropic': AnthropicAgent, 'openai': OpenAIAgent, 'openrouter': OpenRouterAgent,
+                 'local': LocalAgent}[a.provider](
             system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
-                                               'openrouter': 'anthropic/claude-opus-5.5'}[a.provider],
-            a.max_tokens, a.effort, **({'continue_on_cap': True} if sdk_rules else {}))
+                                               'openrouter': 'anthropic/claude-opus-5.5', 'local': 'ripple'}[a.provider],
+            a.max_tokens, a.effort, **({'continue_on_cap': True} if sdk_rules else {}),
+            **({'base_url': a.base_url} if a.provider == 'local' else {}))
 
     progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0, 'replies': 0}
 

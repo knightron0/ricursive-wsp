@@ -488,6 +488,31 @@ class TurnTests(unittest.TestCase):
         self.assertEqual(classic.next(None), [])
         self.assertEqual(classic.messages[-1], {'role': 'assistant', 'content': ''})
 
+    def test_local_agent_keeps_reasoning_content(self):
+        from wsp.agent import LocalAgent
+        seen = []
+
+        class Response:
+            choices = [type('C', (), {'finish_reason': 'tool_calls', 'message': type('M', (), {
+                'model_dump': lambda s, **k: {'role': 'assistant', 'content': '', 'reasoning_content': 'think',
+                                              'tool_calls': [{'id': 'a', 'type': 'function', 'function': {
+                                                  'name': 'labels', 'arguments': '{"indices": [1]}'}}]}})()})()]
+            usage = None
+
+        agent = LocalAgent('sys', 'p', [], base_url='http://node:30000/')
+        self.assertEqual(str(agent.client.base_url), 'http://node:30000/v1/')
+        agent.client = type('Client', (), {})()
+        agent.client.chat = type('Chat', (), {})()
+        agent.client.chat.completions = type('Completions', (), {
+            'create': lambda s, **k: seen.append(k) or Response()})()
+        self.assertEqual(agent.next(None), [('a', 'labels', {'indices': [1]})])
+        self.assertEqual(seen[0]['messages'][0], {'role': 'system', 'content': 'sys'})
+        self.assertEqual(seen[0]['messages'][1], {'role': 'user', 'content': 'p'})
+        self.assertEqual(seen[0]['extra_body'], {})
+        self.assertEqual(agent.messages[-1]['reasoning_content'], 'think')
+        agent.next([('a', 'ok', False)])
+        self.assertEqual(seen[1]['messages'][2]['reasoning_content'], 'think')
+
     def test_openrouter_sdk_turn_rules_prompt(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             fake_data_dir(tmp)

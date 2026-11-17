@@ -128,11 +128,12 @@ class OpenRouterAgent:
     system prompt plus the newest message carry cache_control breakpoints (Anthropic prompt caching)."""
 
     def __init__(self, system, prompt, tools, model='anthropic/claude-opus-5.5', max_tokens=64000, effort=None,
-                 continue_on_cap=False):
+                 continue_on_cap=False, client=True):
         import os
         from openai import OpenAI
-        self.client = OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY'],
-                             timeout=3600, max_retries=8)
+        if client:
+            self.client = OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY'],
+                                 timeout=3600, max_retries=8)
         self.model, self.max_tokens = model, max_tokens
         self.continue_on_cap, self.cut_off = continue_on_cap, False
         self.reasoning = {'effort': effort} if effort else {'enabled': True}
@@ -149,6 +150,9 @@ class OpenRouterAgent:
             last['content'] = [{'type': 'text', 'text': last['content'], 'cache_control': {'type': 'ephemeral'}}]
         return [self.system, *self.messages[:-1], last]
 
+    def extra_body(self):
+        return {'reasoning': self.reasoning, 'usage': {'include': True}}
+
     def next(self, results):
         if isinstance(results, str):
             self.messages.append({'role': 'user', 'content': results})
@@ -157,12 +161,13 @@ class OpenRouterAgent:
                               for i, text, err in results]
         response = self.client.chat.completions.create(
             model=self.model, messages=self._request_messages(), tools=self.tools, max_tokens=self.max_tokens,
-            extra_body={'reasoning': self.reasoning, 'usage': {'include': True}})
+            extra_body=self.extra_body())
         if not response.choices:
             raise RuntimeError(f'no choices: {response}')
         choice = response.choices[0]
         message = choice.message.model_dump(exclude_none=True)
-        message = {k: message[k] for k in ('role', 'content', 'tool_calls', 'reasoning', 'reasoning_details') if k in message}
+        message = {k: message[k] for k in ('role', 'content', 'tool_calls', 'reasoning', 'reasoning_details',
+                                           'reasoning_content') if k in message}
         if not message.get('content') and not message.get('tool_calls'):
             message['content'] = ''
         self.messages.append(message)
@@ -195,6 +200,21 @@ class OpenRouterAgent:
             else:
                 types.append('text')
         return types
+
+
+class LocalAgent(OpenRouterAgent):
+    def __init__(self, system, prompt, tools, model='ripple', max_tokens=64000, effort=None, continue_on_cap=False,
+                 base_url='http://127.0.0.1:30000'):
+        from openai import OpenAI
+        super().__init__(system, prompt, tools, model, max_tokens, effort, continue_on_cap, client=False)
+        self.client = OpenAI(base_url=base_url.rstrip('/') + '/v1', api_key='local', timeout=7200, max_retries=8)
+        self.system = {'role': 'system', 'content': system}
+
+    def _request_messages(self):
+        return [self.system, *self.messages]
+
+    def extra_body(self):
+        return {}
 
 
 class ScriptedAgent:
