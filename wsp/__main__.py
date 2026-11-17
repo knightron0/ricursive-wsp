@@ -90,10 +90,13 @@ def parse_args(argv=None):
                                    'anthropic/claude-opus-5.5 (openrouter), claude-opus-5-5 (claude-sdk)')
     p.add_argument('--token-budget', type=int, default=960000,
                    help='claude-sdk: soft total output-token budget stated in the prompt (not enforced)')
-    p.add_argument('--sdk-max-turns', type=int, default=50, help='claude-sdk: backstop on agent-loop turns')
+    p.add_argument('--sdk-max-turns', type=int,
+                   help="claude-sdk: backstop on Claude Code's own agent-loop turns (default 3 x --max-turns, else 50)")
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
     p.add_argument('--max-tokens', type=int, default=64000, help='Per model turn')
-    p.add_argument('--max-turns', type=int, default=10, help='Model replies; format-only rejections do not count')
+    p.add_argument('--max-turns', type=int,
+                   help='Model replies (default 10; format-only rejections do not count). With claude-sdk: no limit '
+                        'unless given; then every reply counts, the limit is enforced and stated in the prompt')
     p.add_argument('--format-retries', type=int, default=3,
                    help='Most replies that may go uncounted because every call in them was a format rejection')
     p.add_argument('--max-numbers', type=int, default=20000, help='Most numbers a diff may hold')
@@ -111,6 +114,10 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     if (a.mode == 'blind') != (a.data_fraction == 0) or not 0 <= a.data_fraction <= 1:
         p.error('blind takes --data-fraction 0; reasoned/full need --data-fraction in (0, 1]')
+    if a.max_turns is None and (a.provider != 'claude-sdk' or a.script):
+        a.max_turns = 10
+    if a.sdk_max_turns is None:
+        a.sdk_max_turns = 3 * a.max_turns if a.max_turns else 50
     return a
 
 
@@ -150,7 +157,7 @@ def main(argv=None):
     system = system_prompt(a.mode)
     prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
                          a.max_tokens, a.token_budget if sdk else None, warm=a.start_weights is not None,
-                         start_score=start_score)
+                         start_score=start_score, turn_limit=a.max_turns if sdk else None)
     tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device())
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
@@ -163,7 +170,7 @@ def main(argv=None):
     if sdk:
         from wsp.sdk_agent import SDKRun
         agent = SDKRun(episode, system, prompt, tools, a.model or 'claude-opus-5-5', out / 'agent_cwd', a.effort,
-                       a.sdk_max_turns, a.max_tokens)
+                       a.sdk_max_turns, a.max_tokens, max_replies=a.max_turns)
     elif a.script:
         agent = ScriptedAgent.from_file(a.script)
     else:
@@ -213,6 +220,8 @@ def main(argv=None):
             save(out / 'sdk_result.json', agent.result)
             print(f'sdk result: {agent.result.get("subtype")}, {agent.result.get("num_turns")} turns, '
                   f'${agent.result.get("total_cost_usd")}', flush=True)
+        if sdk and agent.turns['closed']:
+            print(f'turn limit reached: {a.max_turns} replies without an accepted submit()', flush=True)
         problems = audit(a.mode, log, agent.content_types())
         save(out / 'audit.json', {'clean': not problems, 'problems': problems})
     if problems:

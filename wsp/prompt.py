@@ -130,6 +130,18 @@ def budget_rules(soft_budget):
             'call whose code raises still returns its output, and files it wrote before the error stay).')
 
 
+def sdk_turn_rules(turn_limit, soft_budget):
+    return (f'# Turns and budget\nYou have {turn_limit} turns. A turn is one reply of yours (one model response); it '
+            'can contain several calls, which run in order, and once submit() is accepted the episode is over. Every '
+            'reply uses a turn, including a reply with no calls, a reply whose calls were all rejected, and a reply '
+            'cut off at the per-reply output-token limit (its cut-off part is discarded). Every call result ends with '
+            'a [harness] note giving the current turn and how many are left. If there is no accepted submit() by the '
+            f'end of turn {turn_limit}, the episode ends with no score. A call the harness rejects returns an error '
+            'message and has no effect (a tools() call whose code raises still returns its output, and files it '
+            'wrote before the error stay). Nothing enforces a token limit, but please keep the whole episode within '
+            f'about {soft_budget:,} output tokens, thinking included.')
+
+
 def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     calls = 'submit()' if mode == 'blind' else 'predict(), evaluate() and submit()'
     lines = ['# Diffs and costs',
@@ -162,10 +174,14 @@ def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     return '\n'.join(lines)
 
 
-def reasoned_rules(n_examples, soft_budget=None, start_score=None):
-    pacing = ('Leave room for phase 2: we suggest calling end_tools() before you have used about half of the budget.'
-              if soft_budget else 'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about '
-              'turn 5.')
+def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=None):
+    if soft_budget and turn_limit:
+        pacing = (f'Leave room for phase 2: we suggest calling end_tools() by about turn {turn_limit // 2}, and before '
+                  'you have used about half of the token budget.')
+    elif soft_budget:
+        pacing = 'Leave room for phase 2: we suggest calling end_tools() before you have used about half of the budget.'
+    else:
+        pacing = 'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about turn 5.'
     return '\n\n'.join([
         f'# How this episode works (mode reasoned)\nYou have a training subset of {n_examples:,} images, indices '
         f'0..{n_examples - 1} (class-balanced, not in class order). Every call and the sandbox use the same indices: '
@@ -196,10 +212,14 @@ def reasoned_rules(n_examples, soft_budget=None, start_score=None):
 
 
 def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3, max_tokens=None,
-                soft_budget=None, warm=False, start_score=None):
+                soft_budget=None, warm=False, start_score=None, turn_limit=None):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
+    if soft_budget:
+        pace = sdk_turn_rules(turn_limit, soft_budget) if turn_limit else budget_rules(soft_budget)
+    else:
+        pace = turns_rules(max_turns, format_retries)
     if mode == 'reasoned':
-        rules = [reasoned_rules(n_examples, soft_budget, start_score)]
+        rules = [reasoned_rules(n_examples, soft_budget, start_score, turn_limit)]
     else:
         rules = [f'# {MODE_RULES[mode]}',
                  (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class '
@@ -211,5 +231,5 @@ def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format
         f'# Writable tensors (name, shape, start-weight stats)\n{tensors}',
         *rules,
         diff_rules(mode, max_numbers, max_tokens, hard_cap=soft_budget is None),
-        budget_rules(soft_budget) if soft_budget else turns_rules(max_turns, format_retries),
+        pace,
     ])

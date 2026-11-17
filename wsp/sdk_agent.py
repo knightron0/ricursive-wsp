@@ -55,12 +55,20 @@ def content_types(messages):
     return types
 
 
-def build_server(episode, specs):
+def build_server(episode, specs, turns=None):
     from claude_agent_sdk import create_sdk_mcp_server
-    return create_sdk_mcp_server(SERVER, tools=episode_tools(episode, specs))
+    return create_sdk_mcp_server(SERVER, tools=episode_tools(episode, specs, turns))
 
 
-def episode_tools(episode, specs):
+def turn_note(turns):
+    turn, limit = turns['reply'], turns['limit']
+    if turn >= limit:
+        return (f'\n[harness] turn {turn} of {limit}: this is your last turn. Without an accepted submit() in this '
+                'reply the episode ends with no score.')
+    return f'\n[harness] turn {turn} of {limit}; {limit - turn} turns left after this one.'
+
+
+def episode_tools(episode, specs, turns=None):
     from claude_agent_sdk import ToolAnnotations, tool
     lock = asyncio.Lock()
 
@@ -72,7 +80,12 @@ def episode_tools(episode, specs):
                 if episode.submission is not None:
                     return {'content': [{'type': 'text', 'text': 'The episode is over: submit() was accepted.'}],
                             'is_error': True}
+                if turns and turns['closed']:
+                    return {'content': [{'type': 'text', 'text': 'The episode is over: the turn limit was reached.'}],
+                            'is_error': True}
                 text, error = await asyncio.to_thread(episode.call, name, dict(args))
+            if turns and turns['limit'] and episode.submission is None:
+                text += turn_note(turns)
             return {'content': [{'type': 'text', 'text': text}], 'is_error': error}
 
         return tool(name, spec['description'], spec['input_schema'],
@@ -93,11 +106,19 @@ def read_fence(cwd):
 
 class SDKRun:
     def __init__(self, episode, system, prompt, specs, model, cwd, effort=None, max_turns=50, max_tokens=None,
-                 on_reply=None):
+                 on_reply=None, max_replies=None):
         self.episode, self.system, self.prompt, self.specs = episode, system, prompt, specs
         self.model, self.cwd, self.effort, self.max_turns, self.max_tokens = model, Path(cwd), effort, max_turns, max_tokens
         self.on_reply = on_reply
+        self.turns = {'reply': 0, 'limit': max_replies, 'closed': False}
         self.messages, self.usage, self.result = [], [], None
+
+    def new_reply(self):
+        self.turns['reply'] += 1
+        limit = self.turns['limit']
+        if limit and self.turns['reply'] > limit and self.episode.submission is None:
+            self.turns['closed'] = True
+        return self.turns['closed']
 
     def options(self):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, PermissionResultDeny
@@ -110,7 +131,7 @@ class SDKRun:
             env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(self.max_tokens)
         return ClaudeAgentOptions(
             tools=['Read'], allowed_tools=[tool_name(s['name']) for s in self.specs] + ['Read'],
-            mcp_servers={SERVER: build_server(self.episode, self.specs)}, strict_mcp_config=True,
+            mcp_servers={SERVER: build_server(self.episode, self.specs, self.turns)}, strict_mcp_config=True,
             system_prompt=f'{self.system}\n\n{SDK_SYSTEM}', setting_sources=[], skills=[], model=self.model,
             effort=self.effort, thinking={'type': 'adaptive', 'display': 'summarized'}, max_turns=self.max_turns,
             cwd=str(self.cwd), env=env, can_use_tool=deny_others,
@@ -125,9 +146,13 @@ class SDKRun:
             async for message in client.receive_response():
                 self.messages.append(to_json(message))
                 if isinstance(message, AssistantMessage):
-                    if message.message_id != reply and reply is not None:
-                        self.reply_done(started)
-                        started = time.monotonic()
+                    if message.message_id != reply:
+                        if reply is not None:
+                            self.reply_done(started)
+                            started = time.monotonic()
+                        if self.new_reply() and not interrupted:
+                            interrupted = True
+                            await client.interrupt()
                     reply = message.message_id
                     if message.usage:
                         if self.usage and self.usage[-1].get('message_id') == reply:

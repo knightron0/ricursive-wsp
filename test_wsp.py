@@ -592,6 +592,54 @@ class SDKBackendTests(unittest.TestCase):
         self.assertNotIn('# Turns', prompt)
         self.assertNotIn('by about turn 5', prompt)
 
+    def test_turn_limit_notes_and_closing(self):
+        from wsp.sdk_agent import SDKRun, episode_tools
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            turns = {'reply': 3, 'limit': 5, 'closed': False}
+            tools = {t.name: t for t in episode_tools(ep, tool_specs('reasoned', writable_names(ep.start)), turns)}
+            run = lambda name, args: asyncio.run(tools[name].handler(args))['content'][0]['text']
+            self.assertTrue(run('labels', {'indices': [0]}).endswith(
+                '\n[harness] turn 3 of 5; 2 turns left after this one.'))
+            turns['reply'] = 5
+            self.assertTrue(run('end_tools', {}).endswith(
+                '[harness] turn 5 of 5: this is your last turn. Without an accepted submit() in this reply the '
+                'episode ends with no score.'))
+            turns['closed'] = True
+            self.assertIn('turn limit was reached', run('labels', {'indices': [1]}))
+            self.assertEqual([e['call'] for e in ep.log], ['labels', 'end_tools'])
+            turns['closed'] = False
+            self.assertEqual(run('submit', BIAS), 'accepted: 10 numbers in 1 tensors')
+            agent = SDKRun(episode('reasoned', Path(tmp) / 'b'), 's', 'p', [], 'm', tmp, max_replies=2)
+            self.assertEqual([agent.new_reply() for _ in range(3)], [False, False, True])
+            self.assertTrue(agent.turns['closed'])
+            done = SDKRun(ep, 's', 'p', [], 'm', tmp, max_replies=1)
+            self.assertEqual([done.new_reply() for _ in range(3)], [False, False, False])
+            self.assertFalse(SDKRun(ep, 's', 'p', [], 'm', tmp).new_reply())
+
+    def test_turn_limit_prompt(self):
+        start = initial_weights(10)
+        prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_tokens=96000,
+                             soft_budget=960000, turn_limit=100)
+        for part in ('# Turns and budget\nYou have 100 turns. A turn is one reply of yours (one model response)',
+                     'a reply cut off at the per-reply output-token limit (its cut-off part is discarded)',
+                     'Every call result ends with a [harness] note giving the current turn and how many are left',
+                     'by the end of turn 100, the episode ends with no score',
+                     'please keep the whole episode within about 960,000 output tokens',
+                     'calling end_tools() by about turn 50, and before you have used about half of the token budget'):
+            self.assertIn(part, prompt)
+        self.assertNotIn('Nothing enforces a limit on replies', prompt)
+        self.assertNotIn('# Budget', prompt)
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--provider',
+                      'claude-sdk', '--max-turns', '100', '--data-dir', tmp, '--output', str(out), '--dry-run'])
+            self.assertIn('You have 100 turns', json.loads((out / 'prompt.json').read_text())['user'])
+            config = json.loads((out / 'config.json').read_text())
+            self.assertEqual((config['max_turns'], config['sdk_max_turns']), (100, 300))
+
     def test_dry_run_uses_soft_budget_prompt(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             fake_data_dir(tmp)

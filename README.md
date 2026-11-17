@@ -40,6 +40,13 @@ last turn, that it must contain a valid `submit()`). A reply whose calls were al
 a turn, for at most `--format-retries` replies (default 3). No valid `submit()` by the end of the last turn means no
 score.
 
+With `--provider claude-sdk` (the episode runs inside a Claude Agent SDK loop) there is no turn limit unless
+`--max-turns` is given, and the prompt states a soft output-token budget (`--token-budget`). With `--max-turns N`
+every model response counts as a turn, including one with no calls, one whose calls were all rejected, and one cut
+off at the per-reply output limit. The prompt states the limit, every call result ends with a
+`[harness] turn k of N` note, and the harness stops the loop when reply N+1 begins. `--sdk-max-turns` is only a
+backstop on Claude Code's own turn count (default 3 × `--max-turns`).
+
 ## Modes
 
 | Mode | Calls | What sandbox code can read |
