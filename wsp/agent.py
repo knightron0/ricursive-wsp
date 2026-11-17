@@ -163,6 +163,8 @@ class OpenRouterAgent:
         choice = response.choices[0]
         message = choice.message.model_dump(exclude_none=True)
         message = {k: message[k] for k in ('role', 'content', 'tool_calls', 'reasoning', 'reasoning_details') if k in message}
+        if not message.get('content') and not message.get('tool_calls'):
+            message['content'] = ''
         self.messages.append(message)
         self.usage.append(response.usage.model_dump() if response.usage else None)
         if choice.finish_reason == 'length' and self.continue_on_cap:
@@ -253,11 +255,13 @@ def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3, st
             if getattr(agent, 'cut_off', False):
                 agent.cut_off = False
                 results = CUT_OFF
+            elif sdk:
+                results = ('Your reply contained no calls. The episode continues until an accepted submit().'
+                           + sdk_note(turn, max_turns))
             else:
                 nudge = ('Call end_tools(), then submit() with your diff to finish.'
                          if episode.mode == 'reasoned' and not episode.locked else 'Call submit() with your diff to finish.')
-                note = sdk_note(turn, max_turns) if sdk else f'\n\n{turn_note(episode, turn, max_turns, True, retries)}'
-                results = nudge + note
+                results = f'{nudge}\n\n{turn_note(episode, turn, max_turns, True, retries)}'
             if on_turn:
                 on_turn(turn, True, results)
             continue

@@ -425,16 +425,20 @@ class TurnTests(unittest.TestCase):
                     return []
                 if self.step == 2:
                     return [('a', 'evaluate', TurnTests.BAD), ('b', 'tools', {'code': 'print(1)'})]
+                if self.step == 3:
+                    return []
                 return [('c', 'labels', {'indices': [0]})]
 
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
             agent, turns = CutThenWork(), []
-            run_episode(agent, episode('reasoned', tmp), 3, lambda t, counted, r: turns.append((t, counted)), 3, 'sdk')
+            run_episode(agent, episode('reasoned', tmp), 4, lambda t, counted, r: turns.append((t, counted)), 3, 'sdk')
             self.assertEqual(agent.seen[1], CUT_OFF)
-            self.assertEqual(turns, [(1, True), (2, True), (3, True)])
-            self.assertTrue(all(text.endswith('\n[harness] turn 2 of 3; 1 turns left after this one.')
+            self.assertEqual(turns, [(1, True), (2, True), (3, True), (4, True)])
+            self.assertTrue(all(text.endswith('\n[harness] turn 2 of 4; 2 turns left after this one.')
                                 for _, text, _ in agent.seen[2]))
             self.assertEqual(len(agent.seen[2]), 2)
+            self.assertEqual(agent.seen[3], 'Your reply contained no calls. The episode continues until an accepted '
+                                            'submit().\n[harness] turn 3 of 4; 1 turns left after this one.')
 
     def test_openrouter_cut_off_reply_continues(self):
         from wsp.agent import OpenRouterAgent
@@ -460,6 +464,15 @@ class TurnTests(unittest.TestCase):
         self.assertEqual(agent.messages[-1], {'role': 'assistant', 'content': '', 'reasoning': 'r'})
         with self.assertRaisesRegex(RuntimeError, 'length'):
             classic.next(None)
+
+        class Empty:
+            choices = [type('C', (), {'finish_reason': 'stop',
+                                      'message': type('M', (), {'model_dump': lambda s, **k: {'role': 'assistant'}})()})()]
+            usage = None
+
+        classic.client.chat.completions = type('Completions', (), {'create': lambda s, **k: Empty()})()
+        self.assertEqual(classic.next(None), [])
+        self.assertEqual(classic.messages[-1], {'role': 'assistant', 'content': ''})
 
     def test_openrouter_sdk_turn_rules_prompt(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU:
