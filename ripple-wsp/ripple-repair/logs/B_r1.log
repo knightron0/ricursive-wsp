@@ -1,0 +1,42 @@
+[   0.0s $0.0000] start: {"original_dev": {"success_rate": 0.8, "mean_capped_time": 5.345, "mean_final_distance": 0.181}}
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 2/41
+[  14.4s $0.0002] ripple_says: {"text": "I'll start by inspecting the controller weights and looking at trajectories in the changed environment.", "tool_call_form": "structured"}
+[  14.4s $0.0002] tool: {"name": "inspect_weights", "args": {"which": "original"}, "error": null}
+[  14.5s $0.0002] tool: {"name": "get_trajectory", "args": {"episode_id": 0, "max_rows": 60, "stride": 2}, "error": null}
+[  14.5s $0.0002] tool: {"name": "get_trajectory", "args": {"episode_id": 1, "max_rows": 60, "stride": 2}, "error": null}
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+[ 249.5s $0.0099] ripple_says: {"text": "Let me look at the trajectories so far.\n\nEpisode 0: goal at (1.457,-0.787). Rover starts at origin heading -0.399. At t=0 it immediately accelerates. It reaches goal at 4.2s. Looks fine but heading drifts.\n\nEpisode 1: goal at (-0.727, 2.559). Takes 6.9s, very slow. The rover travels nearly straight in a fixed direction (theta stays around 1.71-1.72, i.e., fixed). Hmm interesting — th
+[ 294.5s $0.0121] tool: {"name": "get_trajectory", "args": {"episode_id": 1, "max_rows": 30, "start_step": 0, "stride": 1}, "error": null}
+[ 294.5s $0.0121] tool: {"name": "get_trajectory", "args": {"episode_id": 0, "max_rows": 30, "start_step": 0, "stride": 1}, "error": null}
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 2/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 3/41
+    api error (HTTP 503: {"error":{"message":"Provider returned error","code":503,"metadata":{"raw":"{\"error\":{\"message\":\"routing:); attempt 1/41
+    api error (HTTP 503: {"error":{"message":"Provider returned error","code":503,"metadata":{"raw":"{\"error\":{\"message\":\"routing:); attempt 2/41
+    api error (HTTP 503: {"error":{"message":"Provider returned error","code":503,"metadata":{"raw":"{\"error\":{\"message\":\"routing:); attempt 3/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 1/41
+    api error (HTTP 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"error code: 502\n","provider_name"); attempt 2/41
+[ 775.5s $0.0376] end: {"stop": "gave_up_empty_replies", "evaluations": 0, "best": null, "best_beats_original_on_dev": false, "final_report": ""}
+{
+ "stop": "gave_up_empty_replies",
+ "elapsed_s": 775.5,
+ "cost": 0.037575,
+ "prompt_tokens": 159980,
+ "completion_tokens": 42754,
+ "api_calls": 12,
+ "evaluations": 0,
+ "tool_call_forms": {
+  "structured": 2,
+  "none": 10
+ },
+ "original_dev": {
+  "n": 20,
+  "success_rate": 0.8,
+  "mean_capped_time": 5.345,
+  "mean_final_dist": 0.1812876049976763
+ },
+ "best_candidate": null,
+ "best_beats_original_on_dev": false,
+ "original_sha256": "bc0d785cbd8c06de98389e5d5ad2f0978a5813c26864c93a4b07892f06b833cc"
+}

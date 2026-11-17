@@ -1,0 +1,23 @@
+abs_0            pass=True  max_err=0 
+abs_1            pass=False max_err=nan  ValueError('matmul: Input operand 1 has a mismatch in its core dimension 0, with gufunc signature (n?,k),(k,m?)->(n?,m?) (size 2 is different from 1)')
+abs_2            pass=True  max_err=0 
+clamp_0          pass=False max_err=nan  ValueError('matmul: Input operand 1 has a mismatch in its core dimension 0, with gufunc signature (n?,k),(k,m?)->(n?,m?) (size 2 is different from 1)')
+clamp_1          pass=True  max_err=0 
+clamp_2          pass=True  max_err=0 
+max2_0           pass=True  max_err=2.22e-15 
+max2_1           pass=True  max_err=1.78e-15 
+max2_2           pass=True  max_err=1.78e-15 
+xor_0            pass=True  max_err=0 
+xor_1            pass=True  max_err=0 
+xor_2            pass=True  max_err=0 
+sort2_0          pass=True  max_err=8.88e-16 
+sort2_1          pass=True  max_err=1.78e-15 
+sort2_2          pass=True  max_err=2.22e-15 
+median3_0        pass=False max_err=nan  no weights parsed
+median3_1        pass=False max_err=nan  no weights parsed
+median3_2        pass=False max_err=nan  no weights parsed
+band_0           pass=True  max_err=8.53e-14 
+band_1           pass=True  max_err=0 
+band_2           pass=True  max_err=8.88e-15 
+
+p1 ricursiveai/ripple-65b-preview: 16/21 passed (0 API errors excluded)

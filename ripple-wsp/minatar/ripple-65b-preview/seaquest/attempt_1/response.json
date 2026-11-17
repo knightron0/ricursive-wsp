@@ -1,0 +1,45 @@
+{
+ "model": {
+  "name": "ripple-65b-preview",
+  "label": "Ripple-65B Preview",
+  "slug": "ricursiveai/ripple-65b-preview",
+  "group": "Ricursive",
+  "reasoning_effort": "high",
+  "max_output_tokens": 64000
+ },
+ "usage": {
+  "prompt_tokens": 4574,
+  "completion_tokens": 64000,
+  "total_tokens": 68574,
+  "cost": 0.0393148,
+  "is_byok": false,
+  "prompt_tokens_details": {
+   "cached_tokens": 0,
+   "cache_write_tokens": 0,
+   "audio_tokens": 0,
+   "video_tokens": 0
+  },
+  "cost_details": {
+   "upstream_inference_cost": 0.0393148,
+   "upstream_inference_prompt_cost": 0.0009148,
+   "upstream_inference_completions_cost": 0.0384
+  },
+  "completion_tokens_details": {
+   "reasoning_tokens": 0,
+   "image_tokens": 0,
+   "audio_tokens": 0
+  }
+ },
+ "cost": 0.0393148,
+ "audit": {
+  "tool_free": true,
+  "found": []
+ },
+ "discarded_not_tool_free": 0,
+ "effort": "high",
+ "max_tokens": 64000,
+ "finish": "length",
+ "provider": "GMICloud",
+ "s": 876.4,
+ "reasoning": null
+}

@@ -1,0 +1,872 @@
+{
+ "setting": "D",
+ "run": "runs/demo_live_20261113_200222",
+ "config": {
+  "dt": 0.05,
+  "wheel_separation": 0.4,
+  "max_speed": 1.0,
+  "duration": 7.0,
+  "success_radius": 0.15,
+  "goal_dist_min": 1.0,
+  "goal_dist_max": 3.0,
+  "dist_scale": 3.0,
+  "teacher": {
+   "cruise": 0.5,
+   "steer_gain": 1.0,
+   "steer_max": 0.5,
+   "smooth_prev": 0.3
+  },
+  "frozen": true,
+  "frozen_note": "Frozen after the section-4 viability sweep on dev seeds 1000-1099 (logs/viability.json), before any Ripple call or held-out evaluation. duration 20s -> 7s: at 20s motor weakening does not reduce success (feedback absorbs it); 7s = 1.12x the slowest intact dev episode (6.25s)."
+ },
+ "heldout_episodes": 100,
+ "supplementary_duration_override": null,
+ "ripple_patch_improves_heldout": true,
+ "rows": [
+  {
+   "condition": "Original controller, intact environment",
+   "success_rate": 1.0,
+   "mean_capped_time": 4.060499999999999,
+   "mean_final_dist": 0.1378040548995772,
+   "candidate_evaluations": 0,
+   "changed_parameters": 0,
+   "patch_l2_norm": 0.0,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.0
+  },
+  {
+   "condition": "Original controller, disturbed environment",
+   "success_rate": 0.66,
+   "mean_capped_time": 5.8515,
+   "mean_final_dist": 0.26739485433921184,
+   "candidate_evaluations": 0,
+   "changed_parameters": 0,
+   "patch_l2_norm": 0.0,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.0
+  },
+  {
+   "condition": "Ripple-patched controller, disturbed environment",
+   "success_rate": 1.0,
+   "mean_capped_time": 4.6345,
+   "mean_final_dist": 0.14206301578366512,
+   "candidate_evaluations": 9,
+   "changed_parameters": 32,
+   "patch_l2_norm": 2.292603210301446,
+   "patch_file_bytes": 4309,
+   "api_cost_usd": 0.03923,
+   "repair_elapsed_s": 483.8
+  },
+  {
+   "condition": "Ripple-patched controller, intact environment",
+   "success_rate": 1.0,
+   "mean_capped_time": 2.5309999999999997,
+   "mean_final_dist": 0.1286319437247017,
+   "candidate_evaluations": 0,
+   "changed_parameters": 32,
+   "patch_l2_norm": 2.292603210301446,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.0
+  },
+  {
+   "condition": "Patch removed (undo), disturbed environment",
+   "success_rate": 0.66,
+   "mean_capped_time": 5.8515,
+   "mean_final_dist": 0.26739485433921184,
+   "candidate_evaluations": 0,
+   "changed_parameters": 0,
+   "patch_l2_norm": 0.0,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.0,
+   "note": "original checkpoint restored, sha256 match=True"
+  },
+  {
+   "condition": "Estimated motor-gain compensation (external action correction, weights unchanged)",
+   "success_rate": 1.0,
+   "mean_capped_time": 4.1945,
+   "mean_final_dist": 0.13779174301549862,
+   "candidate_evaluations": 0,
+   "changed_parameters": 0,
+   "patch_l2_norm": 0.0,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.26,
+   "note": "gains estimated from the 5 observed trajectories: left=1.000, right=0.500; assumes the fault is a wheel gain"
+  },
+  {
+   "condition": "Random weight search, all 386 params (hill-climb, 10 evals); mean of 20 independent searches",
+   "success_rate": 0.8719999999999999,
+   "mean_capped_time": 5.060074999999999,
+   "mean_final_dist": 0.23865182131497206,
+   "candidate_evaluations": 10,
+   "changed_parameters": 366.7,
+   "patch_l2_norm": 2.120796865610746,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.65,
+   "note": "held-out success min 0.64 / median 0.94 / max 1.00; 19/20 searches found any dev improvement; 3/20 match or beat the Ripple patch on held-out success"
+  },
+  {
+   "condition": "Structure-aware random search: random scale per output row (10 evals); mean of 20 independent searches",
+   "success_rate": 0.962,
+   "mean_capped_time": 4.6099749999999995,
+   "mean_final_dist": 0.14924479026960247,
+   "candidate_evaluations": 10,
+   "changed_parameters": 32.3,
+   "patch_l2_norm": 3.5184557105923284,
+   "patch_file_bytes": 0,
+   "api_cost_usd": 0.0,
+   "repair_elapsed_s": 0.64,
+   "note": "held-out success min 0.66 / median 1.00 / max 1.00; 19/20 searches found any dev improvement; 12/20 match or beat the Ripple patch on held-out success"
+  }
+ ],
+ "random_search_detail": {
+  "all_params_hillclimb": [
+   {
+    "rep": 0,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.85,
+     "mean_capped_time": 4.885,
+     "mean_final_dist": 0.5073358942447421
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.64,
+     "mean_capped_time": 5.571500000000001,
+     "mean_final_dist": 1.216832951796683
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 3.4406966597063366,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 1,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.9,
+     "mean_capped_time": 5.210000000000001,
+     "mean_final_dist": 0.15352038061984224
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.9,
+     "mean_capped_time": 5.2635000000000005,
+     "mean_final_dist": 0.1538879490504304
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 0.7696735952908624,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 2,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.715,
+     "mean_final_dist": 0.14109184865817703
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.99,
+     "mean_capped_time": 4.673500000000001,
+     "mean_final_dist": 0.14058057330917048
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 1.4885088424677317,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 3,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.9,
+     "mean_capped_time": 5.032500000000001,
+     "mean_final_dist": 0.16904118753564917
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.65,
+     "mean_capped_time": 5.5329999999999995,
+     "mean_final_dist": 0.49720651402038546
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 2.29678531866128,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 4,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.985,
+     "mean_final_dist": 0.14916977230639192
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.93,
+     "mean_capped_time": 4.9925,
+     "mean_final_dist": 0.15038049773745596
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 1.6900801816264264,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 5,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.9,
+     "mean_capped_time": 4.897499999999999,
+     "mean_final_dist": 0.14452434955467328
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.94,
+     "mean_capped_time": 4.916499999999999,
+     "mean_final_dist": 0.147411208179553
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 1.3347259342827005,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 6,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.9,
+     "mean_capped_time": 5.175000000000001,
+     "mean_final_dist": 0.16802471085631168
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.84,
+     "mean_capped_time": 5.195000000000001,
+     "mean_final_dist": 0.1729298132811193
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 2.5327690763035795,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 7,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.1375,
+     "mean_final_dist": 0.14178263805428784
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.158,
+     "mean_final_dist": 0.14141389352880648
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 4.319176291720206,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 8,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.695000000000001,
+     "mean_final_dist": 0.14396039286525855
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.99,
+     "mean_capped_time": 4.655,
+     "mean_final_dist": 0.1426964335885449
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 1.6334701790193966,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 9,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.584999999999999,
+     "mean_final_dist": 0.14102497640798298
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.593500000000001,
+     "mean_final_dist": 0.13905034117352985
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 2.715553382706456,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 10,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.8,
+     "mean_capped_time": 5.6475,
+     "mean_final_dist": 0.22467642516356762
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.72,
+     "mean_capped_time": 5.636500000000001,
+     "mean_final_dist": 0.244399400406207
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 1.1082364154938464,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 11,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.430000000000001,
+     "mean_final_dist": 0.1427628069656199
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.391,
+     "mean_final_dist": 0.14369476064286668
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 5.237074767999957,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 12,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.8,
+     "mean_capped_time": 5.4799999999999995,
+     "mean_final_dist": 0.18420053507436082
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.76,
+     "mean_capped_time": 5.519500000000001,
+     "mean_final_dist": 0.19535918432676513
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 0.6554415595432428,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 13,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.9925000000000015,
+     "mean_final_dist": 0.14909190992759985
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.97,
+     "mean_capped_time": 5.024000000000001,
+     "mean_final_dist": 0.1493209313924551
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 3.228229861777626,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 14,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.935,
+     "mean_final_dist": 0.14566003109224762
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.96,
+     "mean_capped_time": 4.908,
+     "mean_final_dist": 0.1448704579572604
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 2.2871324628370893,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 15,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.6725,
+     "mean_final_dist": 0.1457404541587502
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.97,
+     "mean_capped_time": 4.599000000000001,
+     "mean_final_dist": 0.15119710873230863
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 3.1482261834735135,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 16,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.9,
+     "mean_capped_time": 5.2425,
+     "mean_final_dist": 0.1732282787902708
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.82,
+     "mean_capped_time": 5.305,
+     "mean_final_dist": 0.18203461814920568
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 0.6674327378431154,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 17,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.6025,
+     "mean_final_dist": 0.1412285170377821
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.98,
+     "mean_capped_time": 4.719,
+     "mean_final_dist": 0.14223733192181517
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 2.2765578257747014,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 18,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.75,
+     "mean_capped_time": 5.67,
+     "mean_final_dist": 0.2355372735865148
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.72,
+     "mean_capped_time": 5.696000000000001,
+     "mean_final_dist": 0.2501376027656665
+    },
+    "changed_parameters": 386,
+    "patch_l2_norm": 1.5861660356868579,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 19,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.7,
+     "mean_capped_time": 5.89,
+     "mean_final_dist": 0.24970952669898386
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.66,
+     "mean_capped_time": 5.8515,
+     "mean_final_dist": 0.26739485433921184
+    },
+    "changed_parameters": 0,
+    "patch_l2_norm": 0.0,
+    "found_dev_improvement": false
+   }
+  ],
+  "output_row_scale": [
+   {
+    "rep": 0,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.4225,
+     "mean_final_dist": 0.13764368921181885
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.4174999999999995,
+     "mean_final_dist": 0.13689559089135023
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 2.7038740011717595,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 1,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.272500000000001,
+     "mean_final_dist": 0.13630715570240667
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.258000000000001,
+     "mean_final_dist": 0.13711617968437428
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 3.890836575400983,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 2,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.4399999999999995,
+     "mean_final_dist": 0.14263247626211167
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.448,
+     "mean_final_dist": 0.14124840300374186
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 4.404978064792383,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 3,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.7325,
+     "mean_final_dist": 0.1398156668464962
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.98,
+     "mean_capped_time": 4.7355,
+     "mean_final_dist": 0.14264139256452338
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 1.9158356802732313,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 4,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.7,
+     "mean_capped_time": 5.89,
+     "mean_final_dist": 0.24970952669898386
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.66,
+     "mean_capped_time": 5.8515,
+     "mean_final_dist": 0.26739485433921184
+    },
+    "changed_parameters": 0,
+    "patch_l2_norm": 0.0,
+    "found_dev_improvement": false
+   },
+   {
+    "rep": 5,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.2625,
+     "mean_final_dist": 0.1380216310236558
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.2535,
+     "mean_final_dist": 0.1390895742385552
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 4.971871792463013,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 6,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.5875,
+     "mean_final_dist": 0.14140117985722994
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.5985000000000005,
+     "mean_final_dist": 0.14007547372804888
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 2.0245613971052885,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 7,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.34,
+     "mean_final_dist": 0.1392558227435084
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.3385,
+     "mean_final_dist": 0.14003664780711367
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 4.895526025105511,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 8,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.6525,
+     "mean_final_dist": 0.1428733958440227
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.99,
+     "mean_capped_time": 4.6645,
+     "mean_final_dist": 0.14259480867942517
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 2.315339864434002,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 9,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.85,
+     "mean_capped_time": 5.415000000000001,
+     "mean_final_dist": 0.1740057476224226
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.79,
+     "mean_capped_time": 5.4125,
+     "mean_final_dist": 0.17994218863061026
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 2.5124422494506735,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 10,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.220000000000001,
+     "mean_final_dist": 0.13664276096070485
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.1975,
+     "mean_final_dist": 0.13660283415169286
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 4.6679727131404,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 11,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.28,
+     "mean_final_dist": 0.13932393008375732
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.268,
+     "mean_final_dist": 0.1388149790676353
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 3.343388425225023,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 12,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.6450000000000005,
+     "mean_final_dist": 0.14325446464779726
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.99,
+     "mean_capped_time": 4.655,
+     "mean_final_dist": 0.14343339031956467
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 6.831047814572473,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 13,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.565,
+     "mean_final_dist": 0.13995566684126082
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.564,
+     "mean_final_dist": 0.14229961877872843
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 3.049983508182203,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 14,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.2425,
+     "mean_final_dist": 0.13872471572965475
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.2345,
+     "mean_final_dist": 0.13933356443999964
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 5.6925251418708696,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 15,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.835000000000001,
+     "mean_final_dist": 0.14367459876769448
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.846,
+     "mean_final_dist": 0.14470953983019796
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 2.473171398114914,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 16,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.26,
+     "mean_final_dist": 0.13839992032171827
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.244,
+     "mean_final_dist": 0.1387959537466791
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 3.689185512863216,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 17,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.852500000000001,
+     "mean_final_dist": 0.14331523623073136
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.95,
+     "mean_capped_time": 4.8535,
+     "mean_final_dist": 0.14540478143101582
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 1.042492335869981,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 18,
+    "dev": {
+     "n": 20,
+     "success_rate": 0.9,
+     "mean_capped_time": 4.965,
+     "mean_final_dist": 0.1511361960654186
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 0.93,
+     "mean_capped_time": 4.9755,
+     "mean_final_dist": 0.1513624958285872
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 5.747672823646903,
+    "found_dev_improvement": true
+   },
+   {
+    "rep": 19,
+    "dev": {
+     "n": 20,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.3875,
+     "mean_final_dist": 0.1384379055808094
+    },
+    "heldout": {
+     "n": 100,
+     "success_rate": 1.0,
+     "mean_capped_time": 4.3835,
+     "mean_final_dist": 0.1371035342309933
+    },
+    "changed_parameters": 34,
+    "patch_l2_norm": 4.196408888163737,
+    "found_dev_improvement": true
+   }
+  ]
+ },
+ "estimated_gains": {
+  "left": 0.9999999999999988,
+  "right": 0.4999999999999987
+ },
+ "patch_explanation": "Probe higher differential scale to see if completion time improves while keeping all episodes successful.",
+ "patch_edits": [
+  {
+   "tensor": "W3",
+   "op": "scale",
+   "row": 0,
+   "value": 1.8
+  },
+  {
+   "tensor": "W3",
+   "op": "scale",
+   "row": 1,
+   "value": 1.8
+  }
+ ]
+}

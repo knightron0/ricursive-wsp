@@ -1,0 +1,31 @@
+{
+ "stop": "final_report",
+ "elapsed_s": 280.3,
+ "cost": 0.031281,
+ "prompt_tokens": 332080,
+ "completion_tokens": 13489,
+ "api_calls": 16,
+ "evaluations": 5,
+ "tool_call_forms": {
+  "structured": 14,
+  "none": 2
+ },
+ "original_dev": {
+  "n": 20,
+  "success_rate": 0.9,
+  "mean_capped_time": 4.795000000000001,
+  "mean_final_dist": 0.1486373055029064
+ },
+ "best_candidate": {
+  "candidate": 5,
+  "success_rate": 1.0,
+  "mean_capped_time": 3.0700000000000003,
+  "mean_final_dist": 0.1403612700309926,
+  "changed_parameters": 32,
+  "patch_l2_norm": 4.298631019315211
+ },
+ "best_beats_original_on_dev": true,
+ "original_sha256": "bc0d785cbd8c06de98389e5d5ad2f0978a5813c26864c93a4b07892f06b833cc",
+ "patched_sha256": "d361449ac5c88810c743b52561d65776c8ee3d172743e6022ee94ee6ade9dffe",
+ "patch_file_bytes": 4307
+}

@@ -1,0 +1,17 @@
+{
+ "A": {
+  "left_gain": 0.5
+ },
+ "B": {
+  "right_gain": 0.6
+ },
+ "C": {
+  "left_gain": 0.4
+ },
+ "D": {
+  "right_gain": 0.5
+ },
+ "E": {
+  "left_gain": 0.7
+ }
+}

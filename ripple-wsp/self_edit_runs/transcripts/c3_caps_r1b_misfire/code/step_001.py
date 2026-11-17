@@ -1,0 +1,6 @@
+print(score(VAL_BASE))
+print(score(VAL_PROMPTED))
+print('---')
+print(VAL_PROMPTED[0][-500:])
+print('---')
+print(VAL_PROMPTED[1][-500:])
