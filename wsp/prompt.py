@@ -1,7 +1,10 @@
-"""What the agent is told, and the tool definitions it calls. Text only: no image blocks, ever."""
+"""What the agent is told, and the tool definitions it calls. Text only: no image blocks, unless the run is
+--visual, in which case images arrive only as view() results."""
 import json
 
-from wsp.episode import ALLOWED, MAX_IMAGES_PER_CALL, MAX_OUTPUT_CHARS, PREDICT_MAX_IMAGES, PREDICT_MAX_NUMBERS
+from wsp.episode import (ALLOWED, MAX_IMAGES_PER_CALL, MAX_OUTPUT_CHARS, PREDICT_MAX_IMAGES, PREDICT_MAX_NUMBERS,
+                         VIEW_DEFAULT_GRID_SCALE, VIEW_DEFAULT_SCALE, VIEW_MAX_GRID_IMAGES, VIEW_MAX_IMAGES,
+                         VIEW_MAX_SCALE, allowed)
 from wsp.evaluation import weight_stats
 from wsp.model import ARCHITECTURE
 from wsp.tasks import DATASET_DESCRIPTIONS
@@ -31,8 +34,17 @@ you will want to reuse before end_tools(). data() shows the images themselves. e
 so it can tell you whether a diff is better, not why."""
 
 
-def system_prompt(mode):
-    return SYSTEM + ('\n\n' + REASONED_SYSTEM if mode == 'reasoned' else '')
+VISUAL_SYSTEM = """You can also look at the images. view() returns training images as real images, not text, and you
+can see several at once. Use your own visual judgment: what the images in a class have in common (colours, textures,
+shapes, backgrounds, the layout of an object), what separates classes that the network confuses, which images are
+atypical. Let what you see decide which weights you write: which filters, channels or fc rows to build, which class
+they should favour, and what to fix. Look at many images, in groups, rather than a few: a pattern you can see across
+a dozen images is worth more than one example. Images cost input tokens, so ask for what you need."""
+
+
+def system_prompt(mode, visual=False):
+    return (SYSTEM + ('\n\n' + REASONED_SYSTEM if mode == 'reasoned' else '')
+            + ('\n\n' + VISUAL_SYSTEM if visual else ''))
 
 MODE_RULES = {
     'blind': 'Mode blind: you have no data. Available: tools(), submit(). Everything must come from your own '
@@ -47,6 +59,14 @@ CALL_DOCS = {
             '(red rows 0-31, then green rows 0-31, then blue rows 0-31), each 64 hex digits = 32 uint8 pixels left to '
             f'right. At most {MAX_IMAGES_PER_CALL} images per call; each image is about 6,250 characters of text. '
             'Never includes labels.',
+    'view': 'Look at training-subset images by index: they are returned as images (PNG, 32x32 pixels upscaled '
+            f'with bicubic interpolation), several per call, each preceded by a line "image i:". scale: the integer '
+            f'upscaling factor, 1 to {VIEW_MAX_SCALE} (default {VIEW_DEFAULT_SCALE}, i.e. {32 * VIEW_DEFAULT_SCALE}x'
+            f'{32 * VIEW_DEFAULT_SCALE} pixels; {VIEW_DEFAULT_GRID_SCALE} with grid). At most {VIEW_MAX_IMAGES} images '
+            f'per call. grid: true returns all the images as ONE picture, tiled row by row (4 per row, 8 if more than '
+            f'16), each tile marked with its index in the corner; up to {VIEW_MAX_GRID_IMAGES} images per call; this '
+            'is the cheapest way to compare many images side by side. Never includes labels; use labels() on the same '
+            'indices to learn the classes.',
     'labels': 'Class names of training-subset images by index, as a JSON object {"index": "class name"}. No limit per '
               'call; every label costs input tokens.',
     'end_tools': 'End phase 1. One-way: tools() is disabled for the rest of the episode and no code of yours runs '
@@ -72,6 +92,7 @@ CALL_DOCS = {
 REASONED_CALL_DOCS = {
     'labels': CALL_DOCS['labels'] + ' Phase 2 only; any subset image.',
     'predict': CALL_DOCS['predict'] + ' Works in both phases, on any subset image.',
+    'view': CALL_DOCS['view'][:-1] + ' (phase 2). Works in both phases, on any subset image.',
     'evaluate': 'Accuracy of a diff on all training-subset images, using their labels, as JSON {"accuracy": x}: one '
                 'number, no per-class results, loss or confusion matrix. These are the same images labels() covers, '
                 'so it measures fit to them, not held-out accuracy. Phase 2 only. ' + CHECKED,
@@ -99,7 +120,7 @@ def tools_doc(timeout, device, mode='reasoned'):
             'calls.')
 
 
-def tool_specs(mode, names, timeout=300, device='cpu'):
+def tool_specs(mode, names, timeout=300, device='cpu', visual=False):
     entry = {'type': 'object', 'required': ['name'], 'additionalProperties': False,
              'properties': {'name': {'type': 'string', 'enum': list(names)},
                             'index': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'integer'}}},
@@ -113,13 +134,17 @@ def tool_specs(mode, names, timeout=300, device='cpu'):
                'properties': {'weights': diff['properties']['weights'], 'indices': indices['properties']['indices'],
                               'layer': {'type': 'string'},
                               'channels': {'type': ['array', 'null'], 'items': {'type': 'integer'}}}}
-    schemas = {'data': indices, 'labels': indices, 'evaluate': diff, 'submit': diff, 'predict': predict,
+    view = {'type': 'object', 'required': ['indices', 'grid', 'scale'], 'additionalProperties': False,
+            'properties': {'indices': indices['properties']['indices'], 'grid': {'type': ['boolean', 'null']},
+                           'scale': {'type': ['integer', 'null']}}}
+    schemas = {'data': indices, 'view': view, 'labels': indices, 'evaluate': diff, 'submit': diff, 'predict': predict,
                'tools': {'type': 'object', 'required': ['code'], 'additionalProperties': False,
                          'properties': {'code': {'type': 'string'}}},
                'end_tools': {'type': 'object', 'required': [], 'additionalProperties': False, 'properties': {}}}
     docs = {**CALL_DOCS, 'tools': tools_doc(timeout, device, mode), **(REASONED_CALL_DOCS if mode == 'reasoned' else {})}
     return [{'name': n, 'description': docs[n], 'input_schema': schemas[n], 'eager_input_streaming': True}
-            for n in ('data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit') if n in ALLOWED[mode]]
+            for n in ('data', 'view', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit')
+            if n in allowed(mode, visual)]
 
 
 def turns_rules(max_turns, format_retries):
@@ -184,7 +209,20 @@ def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     return '\n'.join(lines)
 
 
-def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=None, max_turns=10):
+VISUAL_RULES = """# Looking at the images (view)
+view() shows you images as images, several at a time (grid=true puts up to 64 in one picture, each tile marked with
+its index). It works in both phases and never shows a label. Use it as a second instrument next to code:
+- Phase 1 (no labels): look at batches of images to see what varies in this data: colours, backgrounds, textures,
+  shapes, object size and position. Let that decide what your code measures and what features you build into the
+  network. Look at the images the network groups together (same cluster, same fc argmax) and judge by eye whether
+  they belong together.
+- Phase 2 (labels): look at images together with their labels() and with the network's predict() outputs for them.
+  Look at what the images of one class share, and at the images the network gets wrong, and decide by what you see
+  which weights to write or change. You may look at as many images as you have turns and budget for.
+Your visual judgment is the point of this variant: base your weight decisions on what you see, and say what you saw."""
+
+
+def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=None, max_turns=10, visual=False):
     if soft_budget and turn_limit:
         pacing = (f'Leave room for phase 2: we suggest calling end_tools() by about turn {turn_limit // 2}, and before '
                   'you have used about half of the token budget.')
@@ -196,12 +234,14 @@ def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=No
         f'# How this episode works (mode reasoned)\nYou have a training subset of {n_examples:,} images, indices '
         f'0..{n_examples - 1} (class-balanced, not in class order). Every call and the sandbox use the same indices: '
         'data["images"][i] in tools() code is image i. The episode has two phases.\n'
-        '- PHASE 1, no labels. Available: tools(), data(), predict(). The sandbox behind tools() holds every subset '
+        '- PHASE 1, no labels. Available: tools(), data(), '
+        + ('view(), ' if visual else '') + 'predict(). The sandbox behind tools() holds every subset '
         'image and no labels. labels(), evaluate() and submit() are refused.\n'
         '- end_tools() ends phase 1. It is one-way: tools() is disabled for the rest of the episode and no code of '
         'yours runs again.\n'
         f'- PHASE 2, labels. Available: labels() on any subset image, evaluate() (accuracy of a diff on all '
-        f'{n_examples:,} images), data(), predict(), submit(). submit() ends the episode.\n'
+        f'{n_examples:,} images), data(), ' + ('view(), ' if visual else '') + 'predict(), submit(). submit() ends '
+        'the episode.\n'
         'The submitted network is scored once on held-out images that you never see; the start network scores '
         + (f'{start_score:.1%} on the held-out validation images. ' if start_score is not None
            else 'about 10%, chance. ') +
@@ -221,12 +261,13 @@ def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=No
     ])
 
 
-def full_rules(n_examples, start_score=None):
+def full_rules(n_examples, start_score=None, visual=False):
     return '\n\n'.join([
         f'# How this episode works (mode full)\nYou have a training subset of {n_examples:,} labeled images, indices '
         f'0..{n_examples - 1} (class-balanced, not in class order). Every call and the sandbox use the same indices: '
         'data["images"][i] and data["labels"][i] in tools() code are image i and its class. There is a single phase: '
-        'data(), labels(), tools(), predict(), evaluate() and submit() are all available from the start, as often and '
+        'data(), ' + ('view(), ' if visual else '') + 'labels(), tools(), predict(), evaluate() and submit() are all '
+        'available from the start, as often and '
         'in any order you like, and only an accepted submit() ends the episode. Your tools() code can read every '
         'label, and evaluate() reports accuracy, loss, per-class accuracy and confusion on the training subset.\n'
         'The submitted network is scored once on held-out images that you never see; the start network scores '
@@ -238,16 +279,17 @@ def full_rules(n_examples, start_score=None):
 
 
 def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format_retries=3, max_tokens=None,
-                soft_budget=None, warm=False, start_score=None, turn_limit=None):
+                soft_budget=None, warm=False, start_score=None, turn_limit=None, visual=False):
     tensors = '\n'.join(f'{n} {s["shape"]} mean={s["mean"]} std={s["std"]}' for n, s in weight_stats(start).items())
     if soft_budget:
         pace = sdk_turn_rules(turn_limit, soft_budget) if turn_limit else budget_rules(soft_budget)
     else:
         pace = turns_rules(max_turns, format_retries)
     if mode == 'reasoned':
-        rules = [reasoned_rules(n_examples, soft_budget, start_score, turn_limit, max_turns)]
+        rules = [reasoned_rules(n_examples, soft_budget, start_score, turn_limit, max_turns, visual)]
+        rules += [VISUAL_RULES] if visual else []
     elif mode == 'full':
-        rules = [full_rules(n_examples, start_score)]
+        rules = [full_rules(n_examples, start_score, visual)]
     else:
         rules = [f'# {MODE_RULES[mode]}',
                  (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class '

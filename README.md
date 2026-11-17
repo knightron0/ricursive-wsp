@@ -3,7 +3,7 @@
 An agent writes the weights of a ResNet-18 as **literal numbers**. Its one answer is a diff over
 the initialized network: the tensors, or blocks of tensors, it wants to change, with every value
 or a constant fill. Everything it leaves out keeps its start values. The submitted network is scored once on held-out val (and test), which
-the agent never sees. Everything the agent sees is text: no image blocks, no vision encoder.
+the agent never sees. Everything the agent sees is text: no image blocks, no vision encoder (except with `--visual`, below).
 
 ## Calls
 
@@ -95,6 +95,7 @@ export ANTHROPIC_API_KEY=...    # Claude Sonnet 5.5 by default (--model, --effor
 python -m wsp --task scratch-cifar10 --mode blind
 python -m wsp --task scratch-cifar10 --mode reasoned --data-fraction 0.1
 python -m wsp --task scratch-cifar10 --mode full     --data-fraction 0.1 --evaluate-test
+python -m wsp --task scratch-cifar10 --mode reasoned --data-fraction 0.1 --visual   # adds view(): images as images
 
 python -m wsp ... --dry-run                 # write the prompt and tool definitions, no API call
 python -m wsp ... --script calls.json       # replay scripted calls, no API call
@@ -102,6 +103,21 @@ python -m unittest test_wsp.py              # offline tests
 ```
 
 A script is a JSON list of turns, each a list of `{"name": ..., "args": {...}}`.
+
+## Visual variant (`--visual`, reasoned and full)
+
+Adds one call, `view(indices, grid, scale)`: training images returned as PNG image blocks instead of hex text. It works
+in both phases and never shows a label (labels still come only from `labels()`, in phase 2). Without `grid`, up to 16
+images per call, each its own image block preceded by `image i:`; `scale` (default 8) upscales the 32x32 image with
+bicubic interpolation. With `grid: true`, up to 64 images in one picture (4 per row, 8 if more than 16), each tile
+marked with its index. `data()` (hex text) stays available. The system and user prompts gain a paragraph telling the
+agent to base its weights on what it sees; without `--visual` the prompts are unchanged.
+
+The audit's "no image blocks" check becomes: image blocks are allowed only in a `--visual` run, and only if a `view()`
+call executed. Providers: `anthropic` (image blocks in tool results), `openai` (`input_image` items in the function
+output; not tested against the live API), `claude-sdk` and `codex-sdk` (MCP image content; neither tested against the live API).
+`openrouter` is refused, since its tool results are text only. `transcript.json` keeps image blocks but drops their
+base64 data. `--script` replays accept `view` calls.
 
 ## Sandbox (`wsp/sandbox.py`)
 

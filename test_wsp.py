@@ -15,8 +15,8 @@ import torch
 
 from wsp import data as datasets
 from wsp.__main__ import describe, main, turn_line
-from wsp.agent import ScriptedAgent, run_episode
-from wsp.episode import Episode, audit, clip, pixels_text
+from wsp.agent import ScriptedAgent, anthropic_content, openai_output, run_episode
+from wsp.episode import Episode, Visual, add_note, audit, clip, pixels_text
 from wsp.evaluation import evaluate, layer_outputs
 from wsp.model import initial_weights, state_shapes
 from wsp.prompt import system_prompt, tool_specs, user_prompt
@@ -957,6 +957,65 @@ class CodexBackendTests(unittest.TestCase):
             self.assertEqual(json.loads((out / 'config.json').read_text())['sdk_max_turns'], 120)
 
 
+class IsolationTests(unittest.TestCase):
+    """A tools() call can touch nothing outside its workspace and has no channel to other runs or sessions."""
+
+    def test_sandbox_cannot_reach_outside_its_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU, patch.dict('os.environ', {
+                'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/sock', 'SOME_API_KEY': 'k', 'SSH_AUTH_SOCK': '/tmp/ssh'}):
+            outside = Path(tmp) / 'outside'
+            outside.mkdir()
+            (outside / 'victim.txt').write_text('x')
+            code = f"""
+import os, posix, glob, socket
+O = {str(outside)!r}
+def t(name, f):
+    try:
+        r = f()
+        print(('ALLOWED ' if r is not False else 'blocked ') + name)
+    except Exception:
+        print('blocked ' + name)
+t('read', lambda: open(O + '/victim.txt').read())
+t('listdir', lambda: os.listdir(O))
+t('glob', lambda: bool(glob.glob(O + '/*')))
+t('exists', lambda: os.path.exists(O + '/victim.txt'))
+t('posix.stat', lambda: posix.stat(O))
+t('write', lambda: open(O + '/new.txt', 'w'))
+t('remove', lambda: os.remove(O + '/victim.txt'))
+t('rename', lambda: os.rename(O + '/victim.txt', O + '/moved.txt'))
+t('mkdir', lambda: os.mkdir(O + '/d'))
+t('mkfifo', lambda: posix.mkfifo(O + '/fifo'))
+t('symlink', lambda: os.symlink('x', O + '/link'))
+t('chdir', lambda: os.chdir(O))
+def shm():
+    from multiprocessing import shared_memory
+    shared_memory.SharedMemory(name='wsp_test_shm', create=True, size=8)
+t('shm', shm)
+t('semaphore', lambda: __import__('_multiprocessing').SemLock(1, 1, 1, '/wsp_test_sem', True))
+t('unix socket', lambda: socket.socket(socket.AF_UNIX).connect('/tmp/sock'))
+print('ENV', sorted(os.environ))
+os.mkdir('own'); open('own/f.txt', 'w').write('ok'); os.rename('own/f.txt', 'own/g.txt')
+print('OWN', os.listdir('own'), os.path.exists('own/g.txt'))
+"""
+            out = episode('blind', tmp).call('tools', {'code': code})[0]
+            self.assertNotIn('ALLOWED', out, out)
+            self.assertEqual(sorted(p.name for p in outside.iterdir()), ['victim.txt'])
+            env = out.split('ENV ', 1)[1].split('\n', 1)[0]
+            for leaked in ('CLAUDE_CODE_MESSAGING_SOCKET', 'SOME_API_KEY', 'SSH_AUTH_SOCK'):
+                self.assertNotIn(leaked, env)
+            self.assertIn("OWN ['g.txt'] True", out)
+
+    def test_parent_session_variables_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU, patch.dict('os.environ', {
+                'CLAUDE_EFFORT': 'low', 'CLAUDECODE': '1', 'CLAUDE_CODE_MESSAGING_TOKEN': 't'}):
+            fake_data_dir(tmp)
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'blind', '--provider', 'claude-sdk', '--data-dir', tmp,
+                      '--output', str(Path(tmp) / 'run'), '--dry-run'])
+            for k in ('CLAUDE_EFFORT', 'CLAUDECODE', 'CLAUDE_CODE_MESSAGING_TOKEN'):
+                self.assertNotIn(k, os.environ)
+
+
 class WarmStartTests(unittest.TestCase):
     def test_default_task_text_unchanged(self):
         self.assertEqual(TASKS['scratch-cifar10'].description,
@@ -1007,6 +1066,92 @@ class WarmStartTests(unittest.TestCase):
 def episode_text_end_tools():
     with tempfile.TemporaryDirectory() as tmp:
         return episode('reasoned', tmp).call('end_tools', {})[0]
+
+
+class VisualTests(unittest.TestCase):
+    def visual_episode(self, tmp, mode='reasoned'):
+        images, labels = tiny()
+        return Episode(mode, initial_weights(10), images, labels, CLASSES, Path(tmp) / 'ws',
+                       partial(apply_diff, max_numbers=10000), 'cpu', timeout=120, visual=True)
+
+    def test_view_is_off_without_visual(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            text, error = episode('reasoned', tmp).call('view', {'indices': [0]})
+            self.assertTrue(error)
+            self.assertNotIsInstance(text, Visual)
+        self.assertNotIn('view', [t['name'] for t in tool_specs('reasoned', ['fc.bias'])])
+        self.assertNotIn('view', system_prompt('reasoned'))
+
+    def test_view_returns_images_in_both_phases_and_no_labels(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = self.visual_episode(tmp)
+            for phase in (1, 2):
+                text, error = ep.call('view', {'indices': [3, 4, 5], 'grid': None, 'scale': None})
+                self.assertFalse(error)
+                self.assertEqual([isinstance(p, bytes) for p in text.parts], [False, True] * 3)
+                self.assertTrue(all(p[:8] == b'\x89PNG\r\n\x1a\n' for p in text.parts if isinstance(p, bytes)))
+                self.assertRegex(str(text), r'^image 3:\n\[image: \d+-byte PNG\]\nimage 4:')
+                ep.call('end_tools', {})
+            self.assertEqual([e['phase'] for e in ep.log if e['call'] == 'view'], [1, 2])
+            self.assertEqual(audit('reasoned', ep.log, ['text', 'image'], visual=True), [])
+
+    def test_view_grid_and_limits(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = self.visual_episode(tmp)
+            text, error = ep.call('view', {'indices': list(range(20)), 'grid': True, 'scale': 2})
+            self.assertFalse(error)
+            self.assertEqual(len([p for p in text.parts if isinstance(p, bytes)]), 1)
+            for args in ({'indices': list(range(17))}, {'indices': []}, {'indices': [0], 'scale': 99},
+                         {'indices': [0], 'scale': 0}, {'indices': [999]}):
+                self.assertTrue(ep.call('view', args)[1], args)
+
+    def test_audit_allows_images_only_when_visual(self):
+        log = [{'call': 'view', 'phase': 1, 'executed': True}]
+        self.assertEqual(audit('reasoned', log, ['text', 'image']),
+                         ['call 0: view executed in reasoned mode', 'transcript contains a image block'])
+        self.assertEqual(audit('reasoned', log, ['text', 'image'], visual=True), [])
+        self.assertEqual(audit('reasoned', [], ['image'], visual=True),
+                         ['transcript contains image blocks but no view() call executed'])
+        self.assertEqual(audit('reasoned', log, ['document'], visual=True), ['transcript contains a document block'])
+
+    def test_note_and_provider_payloads_keep_the_images(self):
+        v = add_note(Visual(['image 0:', b'\x89PNGfake']), '[harness] turn 1')
+        self.assertEqual([b['type'] for b in anthropic_content(v)], ['text', 'image', 'text'])
+        self.assertEqual([b['type'] for b in openai_output(v, False)], ['input_text', 'input_image', 'input_text'])
+        self.assertEqual(anthropic_content('plain'), 'plain')
+        self.assertEqual(add_note('plain', 'n'), 'plain\n\nn')
+
+    def test_prompt_and_tool_spec(self):
+        task = TASKS['scratch-cifar10']
+        start = initial_weights(10)
+        names = writable_names(start)
+        spec = [t for t in tool_specs('reasoned', names, visual=True) if t['name'] == 'view']
+        self.assertEqual(len(spec), 1)
+        self.assertEqual(spec[0]['input_schema']['required'], ['indices', 'grid', 'scale'])
+        self.assertIn('view()', user_prompt(task, 'reasoned', start, 100, 20000, visual=True))
+        self.assertNotIn('view()', user_prompt(task, 'reasoned', start, 100, 20000))
+        self.assertNotIn('view()', system_prompt('reasoned'))
+        self.assertIn('view()', system_prompt('reasoned', True))
+
+    def test_scripted_visual_run_and_cli_checks(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            script = Path(tmp) / 'calls.json'
+            script.write_text(json.dumps([[{'name': 'view', 'args': {'indices': [0, 1], 'grid': None, 'scale': None}}],
+                                          [{'name': 'end_tools', 'args': {}}],
+                                          [{'name': 'view', 'args': {'indices': [2], 'grid': True, 'scale': 2}},
+                                           {'name': 'submit', 'args': BIAS}]]))
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--visual',
+                      '--script', str(script), '--data-dir', tmp, '--device', 'cpu', '--output', str(out)])
+            self.assertEqual(json.loads((out / 'audit.json').read_text()), {'clean': True, 'problems': []})
+            self.assertIn('view', [t['name'] for t in json.loads((out / 'prompt.json').read_text())['tools']])
+            for args in (['--mode', 'blind', '--visual'], ['--mode', 'reasoned', '--data-fraction', '0.1',
+                                                            '--visual', '--provider', 'openrouter']):
+                with self.subTest(args), self.assertRaises(SystemExit), redirect_stdout(io.StringIO()), \
+                        patch('sys.stderr', io.StringIO()):
+                    main(['--task', 'scratch-cifar10', '--dry-run'] + args)
 
 
 class EndToEndTests(unittest.TestCase):
