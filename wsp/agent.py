@@ -128,9 +128,10 @@ class OpenRouterAgent:
     system prompt plus the newest message carry cache_control breakpoints (Anthropic prompt caching)."""
 
     def __init__(self, system, prompt, tools, model='anthropic/claude-opus-5.5', max_tokens=64000, effort=None,
-                 continue_on_cap=False, client=True):
+                 continue_on_cap=False, client=True, provider=None):
         import os
         from openai import OpenAI
+        self.provider = provider
         if client:
             self.client = OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY'],
                                  timeout=3600, max_retries=8)
@@ -150,8 +151,28 @@ class OpenRouterAgent:
             last['content'] = [{'type': 'text', 'text': last['content'], 'cache_control': {'type': 'ephemeral'}}]
         return [self.system, *self.messages[:-1], last]
 
+    def create(self, wait=30, patience=600):
+        import time
+        from openai import APIStatusError, RateLimitError
+        waited = 0
+        while True:
+            try:
+                return self.client.chat.completions.create(
+                    model=self.model, messages=self._request_messages(), tools=self.tools,
+                    max_tokens=self.max_tokens, extra_body=self.extra_body())
+            except (RateLimitError, APIStatusError) as e:
+                status = getattr(e, 'status_code', None)
+                if not self.provider or waited >= patience or not (status == 429 or (status or 0) >= 500):
+                    raise
+                print(f'{self.provider} answered {status}; retrying in {wait}s ({waited}s waited)', flush=True)
+                time.sleep(wait)
+                waited += wait
+
     def extra_body(self):
-        return {'reasoning': self.reasoning, 'usage': {'include': True}}
+        body = {'reasoning': self.reasoning, 'usage': {'include': True}}
+        if self.provider:
+            body['provider'] = {'order': [self.provider], 'allow_fallbacks': False}
+        return body
 
     def next(self, results):
         if isinstance(results, str):
@@ -159,9 +180,7 @@ class OpenRouterAgent:
         elif results is not None:
             self.messages += [{'role': 'tool', 'tool_call_id': i, 'content': f'ERROR: {text}' if err else text}
                               for i, text, err in results]
-        response = self.client.chat.completions.create(
-            model=self.model, messages=self._request_messages(), tools=self.tools, max_tokens=self.max_tokens,
-            extra_body=self.extra_body())
+        response = self.create()
         if not response.choices:
             raise RuntimeError(f'no choices: {response}')
         choice = response.choices[0]

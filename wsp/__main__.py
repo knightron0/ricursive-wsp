@@ -91,6 +91,8 @@ def parse_args(argv=None):
     p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'local', 'claude-sdk', 'codex-sdk'],
                    default='anthropic')
     p.add_argument('--base-url', help='local: OpenAI-compatible server, e.g. http://blackwell1:30000')
+    p.add_argument('--openrouter-provider', help='openrouter: route only to this provider (no fallbacks), '
+                                                 'e.g. PrimeIntellect; 429 and 5xx answers are retried every 30 s for up to 10 min')
     p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), '
                                    "anthropic/claude-opus-5.5 (openrouter), claude-opus-5-5 (claude-sdk), Codex's "
                                    'default model (codex-sdk)')
@@ -204,7 +206,8 @@ def main(argv=None):
             system, prompt, tools, a.model or {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-6.1-sol',
                                                'openrouter': 'anthropic/claude-opus-5.5', 'local': 'ripple'}[a.provider],
             a.max_tokens, a.effort, **({'continue_on_cap': True} if sdk_rules else {}),
-            **({'base_url': a.base_url} if a.provider == 'local' else {}))
+            **({'base_url': a.base_url} if a.provider == 'local' else {}),
+            **({'provider': a.openrouter_provider} if a.provider == 'openrouter' and a.openrouter_provider else {}))
 
     progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0, 'replies': 0}
 
