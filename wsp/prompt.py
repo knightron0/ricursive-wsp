@@ -13,7 +13,12 @@ to fill them with. Everything you leave out keeps its start values. The submitte
 scored on held-out images you never see.
 
 Write values flat in row-major (C) order of the tensor's or block's shape, e.g. a conv weight
-[out, in, kh, kw] goes out-channel by out-channel. Every number costs output tokens."""
+[out, in, kh, kw] goes out-channel by out-channel. Every number costs output tokens.
+
+No training of any kind: do not use backpropagation or gradient-based updates of any weights, in
+any form. That includes gradients you derive and compute by hand and optimizer steps you write
+yourself (SGD, Adam and the like), not only autograd and torch.optim, which the sandbox disables.
+An episode that trains weights this way breaks the task, whatever it scores."""
 
 REASONED_SYSTEM = """In this episode, phase 2 (after end_tools()) is where you learn from labels, and we expect you
 to do that learning in your own context. No code runs in phase 2, but predict() does: give it a diff and image

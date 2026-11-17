@@ -775,6 +775,15 @@ class SDKBackendTests(unittest.TestCase):
             self.assertIn('usage hold: five-hour window 50% used >= limit 40%', out.getvalue())
             self.assertEqual(len(window['holds']), 1)
 
+    def test_every_mode_forbids_hand_written_training(self):
+        for mode in ('blind', 'reasoned', 'full'):
+            text = system_prompt(mode)
+            for part in ('No training of any kind', 'backpropagation or gradient-based updates',
+                         'gradients you derive and compute by hand', 'optimizer steps you write',
+                         'breaks the task, whatever it scores'):
+                self.assertIn(part, text, (mode, part))
+            self.assertNotIn('closed-form', text.lower())
+
     def test_full_mode_prompt_has_no_reasoned_language(self):
         from wsp.sdk_agent import sdk_system
         start = initial_weights(10)
