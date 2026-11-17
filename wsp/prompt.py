@@ -5,7 +5,6 @@ from wsp.episode import ALLOWED, MAX_IMAGES_PER_CALL, MAX_OUTPUT_CHARS, PREDICT_
 from wsp.evaluation import weight_stats
 from wsp.model import ARCHITECTURE
 from wsp.tasks import DATASET_DESCRIPTIONS
-from wsp.toolkit import DOC as TOOLKIT_DOC
 
 SYSTEM = """You are doing weight-space programming: you write the weights of a ResNet-18 directly,
 as literal numbers, instead of training it. Your final answer is one submit() call with a diff:
@@ -20,7 +19,7 @@ REASONED_SYSTEM = """In this episode, phase 2 (after end_tools()) is where you l
 to do that learning in your own context. No code runs in phase 2, but predict() does: give it a diff and image
 indices, and it returns your network's representation of each image, either the final logits or the output of any
 intermediate layer. Call labels() on the same indices, and reason over the (representation, label)
-pairs yourself: which features or outputs go with which class, which of your output rows or clusters stand for which
+pairs yourself: which features or outputs go with which class, which of your output rows stand for which
 class, what weights would separate the classes. Then write the resulting numbers in your diff. Plan phase 1 so that
 this works: build representations in phase 1 that you can read and reason about in phase 2, and print every number
 you will want to reuse before end_tools(). data() shows the images themselves. evaluate() returns only an accuracy,
@@ -88,11 +87,11 @@ DATA_DOCS = {
 def tools_doc(timeout, device, mode='reasoned'):
     return ('Run Python in a sandbox. Each call is a fresh process that runs for at most '
             f'{timeout:g} s on {device}; files you write in the working directory persist across calls (add "." to '
-            'sys.path to import your own modules from there). Preloaded: torch, math, toolkit; `start`, the start '
+            'sys.path to import your own modules from there). Preloaded: torch, math; `start`, the start '
             f'state_dict {{name: tensor}}; {DATA_DOCS[mode]}. '
             'No network, no subprocesses, no threads, no files outside the working directory, no gradients. '
             f'Returns only the last {MAX_OUTPUT_CHARS:,} characters of stdout+stderr, so print long outputs in several '
-            'calls.\n' + TOOLKIT_DOC)
+            'calls.')
 
 
 def tool_specs(mode, names, timeout=300, device='cpu'):
@@ -206,12 +205,12 @@ def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=No
         'labels in your own context in phase 2:\n'
         '1. Phase 1: with code on the unlabeled images, build a network (a diff) whose representations carry the '
         'information you will need, in a form you can read and reason about in phase 2: for example fc outputs that '
-        'score unsupervised clusters, or a small set of channels you understand. Print every number you will want to '
+        'score, or a small set of channels you understand. Print every number you will want to '
         'reuse, since no code runs after end_tools().\n'
         '2. Call end_tools().\n'
         '3. Phase 2: call predict() with your diff on many images, and labels() on the same indices. Reason over the '
         '(representation, label) pairs in your own context: which features or outputs go with which class, which '
-        'output rows or clusters stand for which class, what weights would separate the classes. Write the resulting '
+        'output rows stand for which class, what weights would separate the classes. Write the resulting '
         "numbers into your diff. evaluate() gives a diff's accuracy (one number) if you want to compare candidates.\n"
         '4. submit() your final diff.\n' + pacing,
     ])

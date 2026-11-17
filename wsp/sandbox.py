@@ -4,10 +4,11 @@ The workspace persists across calls. The harness writes into it only what the mo
 nothing (blind), data.pt = {"images", "classes"} (reasoned: labels never exist in this
 process), or data.pt = {"images", "labels", "classes"} (full). Plus start.pt, the start weights.
 
-The code runs with `torch`, `math`, `toolkit`, `data` (or None) and `start` preloaded.
+The code runs with `torch`, `math`, `data` (or None) and `start` preloaded: no helper library.
 Restrictions (Python audit hooks: process isolation, not a security sandbox):
 - No network, subprocesses, threads or ctypes.
-- Read only the Python install, the wsp package and the workspace; write only the workspace.
+- Read only the Python install and the workspace (not the wsp package: no harness code to import);
+  write only the workspace.
 - No gradients in any mode: grad mode is off for good; autograd, torch.optim, torch.func transforms removed.
 """
 import math
@@ -66,7 +67,7 @@ def restrict_io(workspace):
     work = os.path.realpath(workspace)
     repo = os.path.dirname(PACKAGE_DIR)  # holds data/ and runs/: never readable
     readable = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path) if p and os.path.isdir(p)}
-    readable = {r for r in readable if not inside(repo, {r}) and not inside(work, {r})} | {PACKAGE_DIR, work, '/dev'}
+    readable = {r for r in readable if not inside(repo, {r}) and not inside(work, {r})} | {work, '/dev'}
 
     def hook(event, args):
         if event in BLOCKED_EVENTS:
@@ -86,18 +87,15 @@ def restrict_io(workspace):
 
 
 def main(workspace):
-    work = Path(workspace)
+    work = Path(workspace).resolve()
     os.chdir(work)
     start = torch.load(work / 'start.pt', weights_only=True)
     data = torch.load(work / 'data.pt', weights_only=True) if (work / 'data.pt').exists() else None
     source = (work / '_call.py').read_text()
     (work / '_call.py').unlink()
-    from wsp import toolkit  # import before restrictions so torch internals load normally
-    sys.modules['toolkit'] = toolkit
     block_gradients()
     restrict_io(str(work))
-    namespace = {'__name__': '__main__', 'torch': torch, 'math': math, 'toolkit': toolkit,
-                 'data': data, 'start': start}
+    namespace = {'__name__': '__main__', 'torch': torch, 'math': math, 'data': data, 'start': start}
     exec(compile(source, 'tools_call.py', 'exec'), namespace)
 
 

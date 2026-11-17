@@ -207,4 +207,6 @@ def audit(mode, log, transcript_blocks=()):
     for t in transcript_blocks:
         if t in ('image', 'document'):
             problems.append(f'transcript contains a {t} block')
+        elif isinstance(t, str) and t.startswith('forbidden:'):
+            problems.append(f'transcript contains a {t.removeprefix("forbidden:")} item')
     return problems

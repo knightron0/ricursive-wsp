@@ -3,3 +3,4 @@ torchvision>=0.17
 anthropic>=2.0
 openai>=2.0
 claude-agent-sdk>=0.2
+openai-codex>=0.169
