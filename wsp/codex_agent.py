@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 
+from wsp.episode import add_note, mcp_content
 from wsp.sdk_agent import hold_for_usage, to_json, turn_note
 
 SERVER = 'wsp'
@@ -23,7 +24,7 @@ MCP_PROTOCOLS = ('2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05')
 TOOL_OUTPUT_TOKENS = 200_000
 
 CODEX_SYSTEM = f"""Each call above is a tool of the MCP server `{SERVER}`: data, labels, tools, end_tools, predict,
-evaluate, submit. There are no other tools."""
+evaluate, submit (and view, if it is listed). There are no other tools."""
 
 # Item types a clean transcript may hold; anything else means a Codex tool leaked through.
 ALLOWED_ITEMS = {'userMessage', 'agentMessage', 'reasoning', 'mcpToolCall', 'contextCompaction', 'plan'}
@@ -147,7 +148,8 @@ class EpisodeMCP:
                 return f'{name} is not available in this episode', True
             text, error = self.episode.call(name, dict(args or {}))
         if turns and turns['limit'] and self.episode.submission is None:
-            text += turn_note({'reply': turn, 'limit': turns['limit']})
+            note = turn_note({'reply': turn, 'limit': turns['limit']})
+            text = add_note(text, note.strip()) if hasattr(text, 'parts') else text + note
         return text, error
 
     def handle(self, msg):
@@ -168,7 +170,7 @@ class EpisodeMCP:
             result = {'tools': self.tool_list()}
         elif method == 'tools/call':
             text, error = self.call(params.get('name'), params.get('arguments'))
-            result = {'content': [{'type': 'text', 'text': text}], 'isError': bool(error)}
+            result = {'content': mcp_content(text), 'isError': bool(error)}
         else:
             return {'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32601, 'message': f'unknown method {method}'}}
         return {'jsonrpc': '2.0', 'id': mid, 'result': result}

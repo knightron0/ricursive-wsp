@@ -1,6 +1,7 @@
 """The calls an agent can make, the reasoned-mode phases, and the audit.
 
     data(indices)                  training images as hex text (never labels)
+    view(indices, grid, scale)     --visual only: training images as PNG image blocks (never labels)
     labels(indices)                class labels
     tools(code)                    Python in the sandbox
     end_tools()                    reasoned only: leave phase 1 for good
@@ -18,7 +19,10 @@ predict(), evaluate() and submit() check a diff's format first; a format rejecti
 status "format". So nothing derived from a label ever reaches code: labels appear only after code
 is gone, and the agent combines them with images and representations in its own context.
 """
+import base64
+import io
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -35,14 +39,76 @@ ALLOWED = {'blind': {'tools', 'submit'},
            'reasoned': {'data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit'},
            'full': {'data', 'labels', 'tools', 'predict', 'evaluate', 'submit'}}
 PHASE2_CALLS = {'labels', 'evaluate', 'submit'}
+VISUAL_MODES = ('reasoned', 'full')
 MAX_IMAGES_PER_CALL = 16
+VIEW_MAX_IMAGES = 16
+VIEW_MAX_GRID_IMAGES = 64
+VIEW_DEFAULT_SCALE, VIEW_DEFAULT_GRID_SCALE, VIEW_MAX_SCALE = 8, 4, 16
 MAX_OUTPUT_CHARS = 10000
 PREDICT_MAX_NUMBERS = 6000
 PREDICT_MAX_IMAGES = 500
 
 
+def allowed(mode, visual=False):
+    """The calls a mode permits; --visual adds view() (reasoned and full only)."""
+    return ALLOWED[mode] | ({'view'} if visual and mode in VISUAL_MODES else set())
+
+
 class FormatError(ValueError):
     pass
+
+
+class Visual(str):
+    """A call result that carries images. The str value is the text (images shown as placeholders, which is
+    what logs and transcripts keep); .parts is the ordered list of str and PNG bytes the agent is sent."""
+
+    def __new__(cls, parts):
+        text = '\n'.join(p if isinstance(p, str) else f'[image: {len(p)}-byte PNG]' for p in parts)
+        obj = super().__new__(cls, text)
+        obj.parts = list(parts)
+        return obj
+
+
+def add_note(text, note):
+    """Append a harness note to a result without losing its images."""
+    return Visual(text.parts + [note]) if isinstance(text, Visual) else f'{text}\n\n{note}'
+
+
+def mcp_content(text):
+    """MCP tool-result content for a result: one text block, or text and image blocks in order (view())."""
+    if not hasattr(text, 'parts'):
+        return [{'type': 'text', 'text': text}]
+    return [{'type': 'text', 'text': p} if isinstance(p, str) else
+            {'type': 'image', 'data': base64.b64encode(p).decode(), 'mimeType': 'image/png'} for p in text.parts]
+
+
+def image_png(image, scale):
+    """uint8 [3,32,32] -> PNG bytes of the image upscaled `scale` times (bicubic)."""
+    from PIL import Image
+    im = Image.fromarray(image.permute(1, 2, 0).contiguous().numpy()).resize((32 * scale, 32 * scale), Image.BICUBIC)
+    buf = io.BytesIO()
+    im.save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def grid_png(images, indices, scale):
+    """One PNG tiling the images row by row (4 per row, or 8 for more than 16), each tile captioned with its index."""
+    from PIL import Image, ImageDraw
+    cols = min(len(indices), 4 if len(indices) <= 16 else 8)
+    rows = math.ceil(len(indices) / cols)
+    tile, gap = 32 * scale, 4
+    sheet = Image.new('RGB', (cols * (tile + gap) + gap, rows * (tile + gap) + gap), (255, 255, 255))
+    draw = ImageDraw.Draw(sheet)
+    for k, i in enumerate(indices):
+        x, y = gap + (k % cols) * (tile + gap), gap + (k // cols) * (tile + gap)
+        sheet.paste(Image.fromarray(images[i].permute(1, 2, 0).contiguous().numpy()).resize((tile, tile), Image.BICUBIC),
+                    (x, y))
+        label = str(i)
+        draw.rectangle([x, y, x + 7 * len(label) + 4, y + 12], fill=(0, 0, 0))
+        draw.text((x + 2, y + 1), label, fill=(255, 255, 255))
+    buf = io.BytesIO()
+    sheet.save(buf, format='PNG')
+    return buf.getvalue()
 
 
 def pixels_text(image):
@@ -64,8 +130,9 @@ def sandbox_env(workspace):
 
 class Episode:
     def __init__(self, mode, start, images, labels, classes, workspace, apply_diff, device='cpu',
-                 timeout=300, log=None):
-        assert mode in MODES
+                 timeout=300, log=None, visual=False):
+        assert mode in MODES and not (visual and mode not in VISUAL_MODES)
+        self.visual = visual
         self.mode, self.start, self.images, self.labels, self.classes = mode, start, images, labels, classes
         self.workspace, self.apply_diff, self.device, self.timeout = Path(workspace), apply_diff, device, timeout
         self.locked, self.submission, self.log = False, None, log if log is not None else []
@@ -80,7 +147,7 @@ class Episode:
         """Run one call; returns (text, is_error). Every call is logged with its phase."""
         entry = {'call': name, 'phase': 2 if self.locked else 1, 'executed': False}
         status = 'refused'
-        if name not in ALLOWED[self.mode]:
+        if name not in allowed(self.mode, self.visual):
             text = reason = f'{name}() is not available in {self.mode} mode'
         elif name == 'tools' and self.locked:
             text = reason = 'tools() is permanently disabled: end_tools() has been called'
@@ -115,6 +182,24 @@ class Episode:
         if len(idx) > MAX_IMAGES_PER_CALL:
             raise ValueError(f'at most {MAX_IMAGES_PER_CALL} images per call')
         return '\n\n'.join(f'image {i}:\n{pixels_text(self.images[i])}' for i in idx)
+
+    def _view(self, args):
+        idx = self._indices(args)
+        grid, scale = bool(args.get('grid')), args.get('scale')
+        limit = VIEW_MAX_GRID_IMAGES if grid else VIEW_MAX_IMAGES
+        if not idx or len(idx) > limit:
+            raise ValueError(f'give 1 to {limit} image indices')
+        if scale is None:
+            scale = VIEW_DEFAULT_GRID_SCALE if grid else VIEW_DEFAULT_SCALE
+        if not isinstance(scale, int) or not 1 <= scale <= VIEW_MAX_SCALE:
+            raise ValueError(f'scale must be an integer in [1, {VIEW_MAX_SCALE}], or null')
+        if grid:
+            return Visual([f'{len(idx)} images in one grid, row by row; the number in each tile\'s corner is its '
+                           f'image index: {idx}', grid_png(self.images, idx, scale)])
+        parts = []
+        for i in idx:
+            parts += [f'image {i}:', image_png(self.images[i], scale)]
+        return Visual(parts)
 
     def _predict(self, args):
         idx = self._indices(args)
@@ -204,11 +289,12 @@ def _summary(args):
     return args
 
 
-def audit(mode, log, transcript_blocks=()):
-    """Re-check the invariants from the log; returns a list of violations (empty = clean)."""
+def audit(mode, log, transcript_blocks=(), visual=False):
+    """Re-check the invariants from the log; returns a list of violations (empty = clean).
+    Image blocks are a violation unless the run is --visual (then they may come only from view())."""
     problems, locked = [], False
     for i, e in enumerate(log):
-        if e['executed'] and e['call'] not in ALLOWED[mode]:
+        if e['executed'] and e['call'] not in allowed(mode, visual):
             problems.append(f'call {i}: {e["call"]} executed in {mode} mode')
         if mode == 'reasoned' and e['executed'] and e['call'] in PHASE2_CALLS and not locked:
             problems.append(f'call {i}: {e["call"]} executed before end_tools')
@@ -216,8 +302,10 @@ def audit(mode, log, transcript_blocks=()):
             problems.append(f'call {i}: tools executed after end_tools')
         locked |= e['executed'] and e['call'] == 'end_tools'
     for t in transcript_blocks:
-        if t in ('image', 'document'):
+        if t == 'document' or (t == 'image' and not visual):
             problems.append(f'transcript contains a {t} block')
         elif isinstance(t, str) and t.startswith('forbidden:'):
             problems.append(f'transcript contains a {t.removeprefix("forbidden:")} item')
+    if visual and 'image' in transcript_blocks and not any(e['call'] == 'view' and e['executed'] for e in log):
+        problems.append('transcript contains image blocks but no view() call executed')
     return problems
