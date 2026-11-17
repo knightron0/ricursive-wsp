@@ -50,6 +50,18 @@ def pixels_text(image):
     return '\n'.join(image[c, r].numpy().tobytes().hex() for c in range(3) for r in range(32))
 
 
+SANDBOX_ENV = ('PATH', 'LANG', 'LC_ALL', 'LC_CTYPE')
+SANDBOX_ENV_PREFIXES = ('OMP_', 'MKL_', 'PYTORCH_', 'CUDA_', 'NVIDIA_', 'LD_LIBRARY_PATH', 'DYLD_')
+
+
+def sandbox_env(workspace):
+    """A minimal environment: nothing that names this machine's sessions, sockets, keys or other runs."""
+    env = {k: v for k, v in os.environ.items() if k in SANDBOX_ENV or k.startswith(SANDBOX_ENV_PREFIXES)}
+    work = str(Path(workspace).resolve())
+    env.update(PYTHONPATH=str(ROOT), HOME=work, TMPDIR=work, PYTHONDONTWRITEBYTECODE='1')
+    return env
+
+
 class Episode:
     def __init__(self, mode, start, images, labels, classes, workspace, apply_diff, device='cpu',
                  timeout=300, log=None):
@@ -147,8 +159,7 @@ class Episode:
 
     def _tools(self, args):
         (self.workspace / '_call.py').write_text(args['code'])
-        env = {k: v for k, v in os.environ.items() if 'API_KEY' not in k.upper()}
-        env['PYTHONPATH'] = str(ROOT)
+        env = sandbox_env(self.workspace)
         try:
             p = subprocess.run([sys.executable, '-m', 'wsp.sandbox', str(self.workspace)], env=env,
                                capture_output=True, text=True, timeout=self.timeout)

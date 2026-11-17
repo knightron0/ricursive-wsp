@@ -141,7 +141,17 @@ def load_dotenv(path=Path(__file__).resolve().parent.parent / '.env'):
                 os.environ.setdefault(key, value.strip().strip('"\''))
 
 
+# Variables a parent Claude Code / Codex session sets for its own children. An SDK run's agent process would
+# inherit them (CLAUDE_EFFORT changes the effort; the messaging socket and session ids name another session).
+PARENT_SESSION_VARS = ('CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'AI_AGENT', 'CLAUDE_CODE_SESSION_ID',
+                       'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
+                       'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH',
+                       'CODEX_THREAD_ID', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED')
+
+
 def main(argv=None):
+    for k in PARENT_SESSION_VARS:
+        os.environ.pop(k, None)
     load_dotenv()
     a = parse_args(argv)
     task = TASKS[a.task]

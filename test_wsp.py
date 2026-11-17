@@ -817,6 +817,65 @@ class CodexBackendTests(unittest.TestCase):
             self.assertEqual(json.loads((out / 'config.json').read_text())['sdk_max_turns'], 120)
 
 
+class IsolationTests(unittest.TestCase):
+    """A tools() call can touch nothing outside its workspace and has no channel to other runs or sessions."""
+
+    def test_sandbox_cannot_reach_outside_its_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU, patch.dict('os.environ', {
+                'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/sock', 'SOME_API_KEY': 'k', 'SSH_AUTH_SOCK': '/tmp/ssh'}):
+            outside = Path(tmp) / 'outside'
+            outside.mkdir()
+            (outside / 'victim.txt').write_text('x')
+            code = f"""
+import os, posix, glob, socket
+O = {str(outside)!r}
+def t(name, f):
+    try:
+        r = f()
+        print(('ALLOWED ' if r is not False else 'blocked ') + name)
+    except Exception:
+        print('blocked ' + name)
+t('read', lambda: open(O + '/victim.txt').read())
+t('listdir', lambda: os.listdir(O))
+t('glob', lambda: bool(glob.glob(O + '/*')))
+t('exists', lambda: os.path.exists(O + '/victim.txt'))
+t('posix.stat', lambda: posix.stat(O))
+t('write', lambda: open(O + '/new.txt', 'w'))
+t('remove', lambda: os.remove(O + '/victim.txt'))
+t('rename', lambda: os.rename(O + '/victim.txt', O + '/moved.txt'))
+t('mkdir', lambda: os.mkdir(O + '/d'))
+t('mkfifo', lambda: posix.mkfifo(O + '/fifo'))
+t('symlink', lambda: os.symlink('x', O + '/link'))
+t('chdir', lambda: os.chdir(O))
+def shm():
+    from multiprocessing import shared_memory
+    shared_memory.SharedMemory(name='wsp_test_shm', create=True, size=8)
+t('shm', shm)
+t('semaphore', lambda: __import__('_multiprocessing').SemLock(1, 1, 1, '/wsp_test_sem', True))
+t('unix socket', lambda: socket.socket(socket.AF_UNIX).connect('/tmp/sock'))
+print('ENV', sorted(os.environ))
+os.mkdir('own'); open('own/f.txt', 'w').write('ok'); os.rename('own/f.txt', 'own/g.txt')
+print('OWN', os.listdir('own'), os.path.exists('own/g.txt'))
+"""
+            out = episode('blind', tmp).call('tools', {'code': code})[0]
+            self.assertNotIn('ALLOWED', out, out)
+            self.assertEqual(sorted(p.name for p in outside.iterdir()), ['victim.txt'])
+            env = out.split('ENV ', 1)[1].split('\n', 1)[0]
+            for leaked in ('CLAUDE_CODE_MESSAGING_SOCKET', 'SOME_API_KEY', 'SSH_AUTH_SOCK'):
+                self.assertNotIn(leaked, env)
+            self.assertIn("OWN ['g.txt'] True", out)
+
+    def test_parent_session_variables_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU, patch.dict('os.environ', {
+                'CLAUDE_EFFORT': 'low', 'CLAUDECODE': '1', 'CLAUDE_CODE_MESSAGING_TOKEN': 't'}):
+            fake_data_dir(tmp)
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'blind', '--provider', 'claude-sdk', '--data-dir', tmp,
+                      '--output', str(Path(tmp) / 'run'), '--dry-run'])
+            for k in ('CLAUDE_EFFORT', 'CLAUDECODE', 'CLAUDE_CODE_MESSAGING_TOKEN'):
+                self.assertNotIn(k, os.environ)
+
+
 class WarmStartTests(unittest.TestCase):
     def test_default_task_text_unchanged(self):
         self.assertEqual(TASKS['scratch-cifar10'].description,
