@@ -1,5 +1,30 @@
 """Agents and the episode loop. An agent's next(results) returns its next list of calls."""
+import base64
 import json
+
+
+def b64(png):
+    return base64.b64encode(png).decode()
+
+
+def anthropic_content(text):
+    """A tool_result's content: the text, or (for view() results) text and image blocks in order."""
+    if not hasattr(text, 'parts'):
+        return text
+    return [{'type': 'text', 'text': p} if isinstance(p, str) else
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': b64(p)}}
+            for p in text.parts]
+
+
+def redact_images(block):
+    """For transcript.json: keep image blocks but drop their base64 data."""
+    if isinstance(block, dict):
+        if block.get('type') == 'image' and isinstance(block.get('source'), dict):
+            return {**block, 'source': {**block['source'], 'data': f'<{len(block["source"].get("data", ""))} base64 chars>'}}
+        return {k: redact_images(v) if k == 'content' else v for k, v in block.items()}
+    if isinstance(block, list):
+        return [redact_images(b) for b in block]
+    return block
 
 
 class AnthropicAgent:
@@ -16,7 +41,8 @@ class AnthropicAgent:
     def next(self, results):
         if results is not None:
             self.messages.append({'role': 'user', 'content': results if isinstance(results, str) else [
-                {'type': 'tool_result', 'tool_use_id': i, 'content': text, 'is_error': err} for i, text, err in results]})
+                {'type': 'tool_result', 'tool_use_id': i, 'content': anthropic_content(text), 'is_error': err}
+                for i, text, err in results]})
         # On a policy refusal the API re-runs the request on a fallback model ("default") in the same call.
         with self.client.beta.messages.stream(
             model=self.model, max_tokens=self.max_tokens, system=self.system, tools=self.tools,
@@ -40,7 +66,8 @@ class AnthropicAgent:
 
     def transcript(self):
         return [m if isinstance(m['content'], str) else
-                {'role': m['role'], 'content': [b if isinstance(b, dict) else b.model_dump() for b in m['content']]}
+                {'role': m['role'], 'content': redact_images(
+                    [b if isinstance(b, dict) else b.model_dump() for b in m['content']])}
                 for m in self.messages]
 
     def content_types(self):
@@ -52,6 +79,8 @@ class AnthropicAgent:
                 continue
             for b in m['content']:
                 types.append(b['type'] if isinstance(b, dict) else b.type)
+                if isinstance(b, dict) and isinstance(b.get('content'), list):
+                    types += [c['type'] for c in b['content'] if isinstance(c, dict)]
         return types
 
 
@@ -71,6 +100,16 @@ def strict_schema(schema):
     return {**schema, 'properties': properties, 'required': list(properties)}
 
 
+def openai_output(text, err):
+    """A function_call_output: a string, or (for view() results) input_text and input_image items in order."""
+    if err:
+        return f'ERROR: {text}'
+    if not hasattr(text, 'parts'):
+        return text
+    return [{'type': 'input_text', 'text': p} if isinstance(p, str) else
+            {'type': 'input_image', 'image_url': f'data:image/png;base64,{b64(p)}'} for p in text.parts]
+
+
 class OpenAIAgent:
     """OpenAI via the Responses API: function tools, text-only input, stateless (store=False)."""
 
@@ -88,7 +127,7 @@ class OpenAIAgent:
         if isinstance(results, str):
             self.input.append({'role': 'user', 'content': results})
         elif results is not None:
-            self.input += [{'type': 'function_call_output', 'call_id': i, 'output': f'ERROR: {text}' if err else text}
+            self.input += [{'type': 'function_call_output', 'call_id': i, 'output': openai_output(text, err)}
                            for i, text, err in results]
         response = self.client.responses.create(
             model=self.model, instructions=self.system, input=self.input, tools=self.tools, store=False,
@@ -109,12 +148,14 @@ class OpenAIAgent:
         return calls
 
     def transcript(self):
-        return self.input
+        return [{**i, 'output': [{**o, 'image_url': '<image>'} if o.get('type') == 'input_image' else o
+                                 for o in i['output']]} if isinstance(i.get('output'), list) else i
+                for i in self.input]
 
     def content_types(self):
         types = []
         for item in self.input:
-            content = item.get('content')
+            content = item.get('content', item.get('output'))
             if isinstance(content, list):
                 types += [c.get('type') for c in content if isinstance(c, dict)]
             else:
@@ -226,6 +267,7 @@ def turn_note(episode, turn, max_turns, counted, retries_left):
 
 
 def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
+    from wsp.episode import add_note
     results, turn, retries = None, 0, format_retries
     while turn < max_turns:
         calls = agent.next(results)
@@ -254,7 +296,7 @@ def run_episode(agent, episode, max_turns=10, on_turn=None, format_retries=3):
             retries -= 1
         if episode.submission is None:
             call_id, text, error = results[-1]
-            results[-1] = (call_id, f'{text}\n\n{turn_note(episode, turn, max_turns, counted, retries)}', error)
+            results[-1] = (call_id, add_note(text, turn_note(episode, turn, max_turns, counted, retries)), error)
         if on_turn:
             on_turn(turn, counted, results)
         if episode.submission is not None:

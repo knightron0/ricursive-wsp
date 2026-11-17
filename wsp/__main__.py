@@ -119,11 +119,18 @@ def parse_args(argv=None):
     p.add_argument('--device', default=default_device())
     p.add_argument('--output', type=Path,
                    default=Path('runs') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    p.add_argument('--visual', action='store_true',
+                   help='reasoned/full: add view(), which returns images as image blocks (several per call, or one '
+                        'grid), so the agent can base its weights on what it sees. anthropic, openai, claude-sdk')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--evaluate-test', action='store_true')
     a = p.parse_args(argv)
     if (a.mode == 'blind') != (a.data_fraction == 0) or not 0 <= a.data_fraction <= 1:
         p.error('blind takes --data-fraction 0; reasoned/full need --data-fraction in (0, 1]')
+    if a.visual and a.mode not in ('reasoned', 'full'):
+        p.error('--visual needs --mode reasoned or full')
+    if a.visual and a.provider == 'openrouter':
+        p.error('--visual is not supported with --provider openrouter (its tool results are text only)')
     if a.max_turns is None and (a.provider not in SDK_PROVIDERS or a.script):
         a.max_turns = 10
     if a.sdk_max_turns is None:
@@ -174,11 +181,11 @@ def main(argv=None):
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist()})
     sdk = a.provider in SDK_PROVIDERS and not a.script
-    system = system_prompt(a.mode)
+    system = system_prompt(a.mode, a.visual)
     prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
                          a.max_tokens, a.token_budget if sdk else None, warm=a.start_weights is not None,
-                         start_score=start_score, turn_limit=a.max_turns if sdk else None)
-    tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device())
+                         start_score=start_score, turn_limit=a.max_turns if sdk else None, visual=a.visual)
+    tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device(), a.visual)
     save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
     print(f'Prompt: {out / "prompt.json"}')
     if a.dry_run:
@@ -186,7 +193,7 @@ def main(argv=None):
 
     log = []
     episode = Episode(a.mode, start, images, labels, classes, out / 'workspace',
-                      partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log)
+                      partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log, a.visual)
     if sdk and a.provider == 'codex-sdk':
         from wsp.codex_agent import CodexRun
         agent = CodexRun(episode, system, prompt, tools, a.model, out / 'agent_cwd', a.effort, a.sdk_max_turns,
@@ -252,7 +259,7 @@ def main(argv=None):
             print(f'turn limit reached: {a.max_turns} replies without an accepted submit()', flush=True)
         if sdk and agent.window['holds']:
             save(out / 'usage_holds.json', agent.window['holds'])
-        problems = audit(a.mode, log, agent.content_types())
+        problems = audit(a.mode, log, agent.content_types(), a.visual)
         save(out / 'audit.json', {'clean': not problems, 'problems': problems})
     if problems:
         sys.exit(f'AUDIT FAILED: {problems}')

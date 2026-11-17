@@ -4,11 +4,13 @@ import os
 from pathlib import Path
 import time
 
+from wsp.episode import add_note, mcp_content
+
 SERVER = 'wsp'
 MAX_RESULT_CHARS = 500_000
 
 SDK_SYSTEM = """Each call above is a tool named mcp__wsp__<call>: mcp__wsp__data, mcp__wsp__labels, mcp__wsp__tools,
-mcp__wsp__end_tools, mcp__wsp__predict, mcp__wsp__evaluate, mcp__wsp__submit. If a tool result is too long to show
+mcp__wsp__end_tools, mcp__wsp__predict, mcp__wsp__evaluate, mcp__wsp__submit (and mcp__wsp__view, if view() is listed). If a tool result is too long to show
 inline and is saved to a file instead, open it with Read; Read works only on those saved tool outputs."""
 
 
@@ -104,8 +106,8 @@ def episode_tools(episode, specs, turns=None, window=None):
                             'is_error': True}
                 text, error = await asyncio.to_thread(episode.call, name, dict(args))
             if turns and turns['limit'] and episode.submission is None:
-                text += turn_note(turns)
-            return {'content': [{'type': 'text', 'text': text}], 'is_error': error}
+                text = add_note(text, turn_note(turns).strip()) if hasattr(text, 'parts') else text + turn_note(turns)
+            return {'content': mcp_content(text), 'is_error': error}
 
         return tool(name, spec['description'], spec['input_schema'],
                     annotations=ToolAnnotations(maxResultSizeChars=MAX_RESULT_CHARS))(handler)
