@@ -1,3 +1,0 @@
-### 21:42:59 c3_caps_r1b = clean continuation of c3_caps_r1 from its first 18 steps (transcript prefix copied; r1 steps 19-31 were local VM-link errors during Mac lid sleep). agent4.py now waits out link failures.
-[1/45] 35.87s in=1560 out=2460 $0.0018 (total $0.0018) finish=tool_calls | structured run_python 135ch 10.2s `print(score(VAL_BASE))` -> [0.0s]
-### misfire: prefix copy failed, agent4 started from step 1; killed after 1 step ($0.0018, printed base score only, no kernel edits)
