@@ -233,7 +233,8 @@ class Episode:
             raise ValueError('already in phase 2')
         self.locked = True
         return ('Phase 2 has started. tools() is permanently disabled. Available now: labels() on any image '
-                f'(indices 0..{len(self.labels) - 1}), evaluate() (accuracy on all of them), data(), predict() and '
+                f'(indices 0..{len(self.labels) - 1}), evaluate() (accuracy on all of them), data(), ' +
+                ('view(), ' if self.visual else '') + 'predict() and '
                 'submit(). Learn from the labels in your own context: predict() your network on images, call '
                 'labels() on the same indices, and reason over the (representation, label) pairs to decide the '
                 'numbers you write.')
