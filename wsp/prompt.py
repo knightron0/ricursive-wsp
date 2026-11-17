@@ -174,14 +174,14 @@ def diff_rules(mode, max_numbers, max_tokens, hard_cap=True):
     return '\n'.join(lines)
 
 
-def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=None):
+def reasoned_rules(n_examples, soft_budget=None, start_score=None, turn_limit=None, max_turns=10):
     if soft_budget and turn_limit:
         pacing = (f'Leave room for phase 2: we suggest calling end_tools() by about turn {turn_limit // 2}, and before '
                   'you have used about half of the token budget.')
     elif soft_budget:
         pacing = 'Leave room for phase 2: we suggest calling end_tools() before you have used about half of the budget.'
     else:
-        pacing = 'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about turn 5.'
+        pacing = f'Plan your turns so that phase 2 has room: we suggest calling end_tools() by about turn {max_turns // 2}.'
     return '\n\n'.join([
         f'# How this episode works (mode reasoned)\nYou have a training subset of {n_examples:,} images, indices '
         f'0..{n_examples - 1} (class-balanced, not in class order). Every call and the sandbox use the same indices: '
@@ -219,7 +219,7 @@ def user_prompt(task, mode, start, n_examples, max_numbers, max_turns=10, format
     else:
         pace = turns_rules(max_turns, format_retries)
     if mode == 'reasoned':
-        rules = [reasoned_rules(n_examples, soft_budget, start_score, turn_limit)]
+        rules = [reasoned_rules(n_examples, soft_budget, start_score, turn_limit, max_turns)]
     else:
         rules = [f'# {MODE_RULES[mode]}',
                  (f'# Training subset\n{n_examples} images, indices 0..{n_examples - 1} (class-balanced, not in class '

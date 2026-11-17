@@ -452,6 +452,10 @@ class TurnTests(unittest.TestCase):
                      'at most 3 such replies'):
             self.assertIn(part, prompt)
         self.assertNotIn('Pool', prompt)
+        long = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_turns=100, format_retries=3,
+                           max_tokens=96000)
+        self.assertIn('calling end_tools() by about turn 50.', long)
+        self.assertIn('You have 100 turns.', long)
         self.assertIn('reason over the (representation, label)\npairs yourself', system_prompt('reasoned'))
         self.assertNotIn('representation', system_prompt('full'))
         specs = {t['name']: t['description'] for t in tool_specs('reasoned', writable_names(start), 300, 'cpu')}
