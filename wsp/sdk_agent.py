@@ -55,9 +55,27 @@ def content_types(messages):
     return types
 
 
-def build_server(episode, specs, turns=None):
+def build_server(episode, specs, turns=None, window=None):
     from claude_agent_sdk import create_sdk_mcp_server
-    return create_sdk_mcp_server(SERVER, tools=episode_tools(episode, specs, turns))
+    return create_sdk_mcp_server(SERVER, tools=episode_tools(episode, specs, turns, window))
+
+
+def five_hour_window(event):
+    raw = event.rate_limit_info.raw if hasattr(event, 'rate_limit_info') else event['rate_limit_info']['raw']
+    w = (raw or {}).get('unifiedWindows', {}).get('five_hour', {})
+    return w.get('utilization'), w.get('resetsAt')
+
+
+async def hold_for_usage(window, sleep=None, now=None):
+    sleep, now = sleep or asyncio.sleep, now or time.time
+    while window and window['limit'] and window['used'] is not None and window['used'] >= window['limit']:
+        resets = window['resets'] or now() + 600
+        seconds = max(60.0, resets - now() + 120)
+        window['holds'].append({'at': now(), 'used': window['used'], 'seconds': seconds})
+        print(f'usage hold: five-hour window {window["used"]:.0%} used >= limit {window["limit"]:.0%}; holding the '
+              f'next call {seconds:.0f}s, until after the reset', flush=True)
+        await sleep(seconds)
+        window['used'] = None
 
 
 def turn_note(turns):
@@ -68,7 +86,7 @@ def turn_note(turns):
     return f'\n[harness] turn {turn} of {limit}; {limit - turn} turns left after this one.'
 
 
-def episode_tools(episode, specs, turns=None):
+def episode_tools(episode, specs, turns=None, window=None):
     from claude_agent_sdk import ToolAnnotations, tool
     lock = asyncio.Lock()
 
@@ -77,6 +95,7 @@ def episode_tools(episode, specs, turns=None):
 
         async def handler(args):
             async with lock:
+                await hold_for_usage(window)
                 if episode.submission is not None:
                     return {'content': [{'type': 'text', 'text': 'The episode is over: submit() was accepted.'}],
                             'is_error': True}
@@ -106,12 +125,18 @@ def read_fence(cwd):
 
 class SDKRun:
     def __init__(self, episode, system, prompt, specs, model, cwd, effort=None, max_turns=50, max_tokens=None,
-                 on_reply=None, max_replies=None):
+                 on_reply=None, max_replies=None, usage_limit=None):
         self.episode, self.system, self.prompt, self.specs = episode, system, prompt, specs
         self.model, self.cwd, self.effort, self.max_turns, self.max_tokens = model, Path(cwd), effort, max_turns, max_tokens
         self.on_reply = on_reply
         self.turns = {'reply': 0, 'limit': max_replies, 'closed': False}
+        self.window = {'limit': usage_limit, 'used': None, 'resets': None, 'holds': []}
         self.messages, self.usage, self.result = [], [], None
+
+    def rate_event(self, event):
+        used, resets = five_hour_window(event)
+        if used is not None:
+            self.window['used'], self.window['resets'] = used, resets
 
     def new_reply(self):
         self.turns['reply'] += 1
@@ -126,19 +151,20 @@ class SDKRun:
         async def deny_others(name, args, context):
             return PermissionResultDeny(message=f'{name} is not available in this episode')
 
-        env = {'MCP_TOOL_TIMEOUT': str(30 * 60 * 1000)}
+        env = {'MCP_TOOL_TIMEOUT': str((6 * 60 if self.window['limit'] else 30) * 60 * 1000)}
         if self.max_tokens:
             env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(self.max_tokens)
         return ClaudeAgentOptions(
             tools=['Read'], allowed_tools=[tool_name(s['name']) for s in self.specs] + ['Read'],
-            mcp_servers={SERVER: build_server(self.episode, self.specs, self.turns)}, strict_mcp_config=True,
+            mcp_servers={SERVER: build_server(self.episode, self.specs, self.turns, self.window)},
+            strict_mcp_config=True,
             system_prompt=f'{self.system}\n\n{SDK_SYSTEM}', setting_sources=[], skills=[], model=self.model,
             effort=self.effort, thinking={'type': 'adaptive', 'display': 'summarized'}, max_turns=self.max_turns,
             cwd=str(self.cwd), env=env, can_use_tool=deny_others,
             hooks={'PreToolUse': [HookMatcher(matcher='Read', hooks=[read_fence(self.cwd)])]})
 
     async def run(self):
-        from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage
+        from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, RateLimitEvent, ResultMessage
         self.cwd.mkdir(parents=True, exist_ok=True)
         reply, started, interrupted = None, time.monotonic(), False
         async with ClaudeSDKClient(options=self.options()) as client:
@@ -162,6 +188,8 @@ class SDKRun:
                     if self.episode.submission is not None and not interrupted:
                         interrupted = True
                         await client.interrupt()
+                elif isinstance(message, RateLimitEvent):
+                    self.rate_event(message)
                 elif isinstance(message, ResultMessage):
                     self.result = to_json(message)
         self.reply_done(started)

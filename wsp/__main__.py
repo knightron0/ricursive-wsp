@@ -92,6 +92,9 @@ def parse_args(argv=None):
                    help='claude-sdk: soft total output-token budget stated in the prompt (not enforced)')
     p.add_argument('--sdk-max-turns', type=int,
                    help="claude-sdk: backstop on Claude Code's own agent-loop turns (default 3 x --max-turns, else 50)")
+    p.add_argument('--usage-limit', type=float,
+                   help='claude-sdk: hold the next call while the five-hour plan window is at least this fraction used, '
+                        'until it resets (e.g. 0.4)')
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
     p.add_argument('--max-tokens', type=int, default=64000, help='Per model turn')
     p.add_argument('--max-turns', type=int,
@@ -170,7 +173,7 @@ def main(argv=None):
     if sdk:
         from wsp.sdk_agent import SDKRun
         agent = SDKRun(episode, system, prompt, tools, a.model or 'claude-opus-5-5', out / 'agent_cwd', a.effort,
-                       a.sdk_max_turns, a.max_tokens, max_replies=a.max_turns)
+                       a.sdk_max_turns, a.max_tokens, max_replies=a.max_turns, usage_limit=a.usage_limit)
     elif a.script:
         agent = ScriptedAgent.from_file(a.script)
     else:
@@ -222,6 +225,8 @@ def main(argv=None):
                   f'${agent.result.get("total_cost_usd")}', flush=True)
         if sdk and agent.turns['closed']:
             print(f'turn limit reached: {a.max_turns} replies without an accepted submit()', flush=True)
+        if sdk and agent.window['holds']:
+            save(out / 'usage_holds.json', agent.window['holds'])
         problems = audit(a.mode, log, agent.content_types())
         save(out / 'audit.json', {'clean': not problems, 'problems': problems})
     if problems:

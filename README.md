@@ -45,7 +45,9 @@ With `--provider claude-sdk` (the episode runs inside a Claude Agent SDK loop) t
 every model response counts as a turn, including one with no calls, one whose calls were all rejected, and one cut
 off at the per-reply output limit. The prompt states the limit, every call result ends with a
 `[harness] turn k of N` note, and the harness stops the loop when reply N+1 begins. `--sdk-max-turns` is only a
-backstop on Claude Code's own turn count (default 3 × `--max-turns`).
+backstop on Claude Code's own turn count (default 3 × `--max-turns`). `--usage-limit F` holds the next call while the
+five-hour plan window is at least F used, until it resets (tool calls may then wait for hours; the timeout is raised
+to 6 h), so the agent pauses without losing a turn; holds go to `usage_holds.json`.
 
 ## Modes
 

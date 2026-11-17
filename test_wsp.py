@@ -617,6 +617,40 @@ class SDKBackendTests(unittest.TestCase):
             self.assertEqual([done.new_reply() for _ in range(3)], [False, False, False])
             self.assertFalse(SDKRun(ep, 's', 'p', [], 'm', tmp).new_reply())
 
+    def test_usage_hold(self):
+        from wsp.sdk_agent import SDKRun, episode_tools, five_hour_window, hold_for_usage
+        event = {'rate_limit_info': {'raw': {'unifiedWindows': {'five_hour': {'utilization': 0.45, 'resetsAt': 1000}}}}}
+        self.assertEqual(five_hour_window(event), (0.45, 1000))
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        window = {'limit': 0.4, 'used': 0.45, 'resets': 1000, 'holds': []}
+        asyncio.run(hold_for_usage(window, fake_sleep, lambda: 400.0))
+        self.assertEqual(slept, [720.0])
+        self.assertIsNone(window['used'])
+        self.assertEqual(window['holds'], [{'at': 400.0, 'used': 0.45, 'seconds': 720.0}])
+        for w in ({'limit': 0.4, 'used': 0.39, 'resets': 1000, 'holds': []},
+                  {'limit': None, 'used': 0.9, 'resets': 1000, 'holds': []}, None):
+            asyncio.run(hold_for_usage(w, fake_sleep, lambda: 400.0))
+        self.assertEqual(len(slept), 1)
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            agent = SDKRun(ep, 's', 'p', [], 'm', tmp, usage_limit=0.4)
+            agent.rate_event(event)
+            self.assertEqual((agent.window['used'], agent.window['resets']), (0.45, 1000))
+            self.assertEqual(agent.options().env['MCP_TOOL_TIMEOUT'], str(6 * 3600 * 1000))
+            self.assertEqual(SDKRun(ep, 's', 'p', [], 'm', tmp).options().env['MCP_TOOL_TIMEOUT'], str(30 * 60 * 1000))
+            window = {'limit': 0.4, 'used': 0.5, 'resets': 0, 'holds': []}
+            tools = {t.name: t for t in episode_tools(ep, tool_specs('reasoned', writable_names(ep.start)),
+                                                      None, window)}
+            with patch('wsp.sdk_agent.asyncio.sleep', fake_sleep), redirect_stdout(io.StringIO()) as out:
+                text = asyncio.run(tools['labels'].handler({'indices': [0]}))['content'][0]['text']
+            self.assertIn('only in phase 2', text)
+            self.assertIn('usage hold: five-hour window 50% used >= limit 40%', out.getvalue())
+            self.assertEqual(len(window['holds']), 1)
+
     def test_turn_limit_prompt(self):
         start = initial_weights(10)
         prompt = user_prompt(TASKS['scratch-cifar10'], 'reasoned', start, 20, 10000, max_tokens=96000,
