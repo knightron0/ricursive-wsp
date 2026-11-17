@@ -103,9 +103,11 @@ A script is a JSON list of turns, each a list of `{"name": ..., "args": {...}}`.
 ## Sandbox (`wsp/sandbox.py`)
 
 Each `tools()` call is a fresh Python process in the run's `workspace/`, whose files persist
-between calls. `torch`, `math`, `toolkit`, `data` and `start` (the start state_dict) are
-preloaded. There's no network, no subprocesses, threads or ctypes, and no API keys. Code can read
-only the Python install, `wsp/` and the workspace, and can write only the workspace. Gradients are
+between calls. `torch`, `math`, `data` and `start` (the start state_dict) are preloaded, and
+nothing else: no helper library, so the agent writes its own forward passes, statistics and
+fits. There's no network, no subprocesses, threads or ctypes, and no API keys. Code can read
+only the Python install and the workspace (not `wsp/`, so no harness code can be imported or
+read), and can write only the workspace. Gradients are
 disabled. The isolation uses Python audit hooks: it's process isolation, **not a security sandbox**.
 
 ## Files
@@ -118,7 +120,7 @@ disabled. The isolation uses Python audit hooks: it's process isolation, **not a
 | `wsp/prompt.py` | system and user prompt, per-mode rules, tool definitions |
 | `wsp/sandbox.py` | runs one `tools()` call |
 | `wsp/tasks.py` | the two tasks, start weights, diff validation |
-| `wsp/data.py`, `model.py`, `evaluation.py`, `toolkit.py` | splits (45k train / 5k val / test), ResNet-18, scoring, sandbox helpers |
+| `wsp/data.py`, `model.py`, `evaluation.py` | splits (45k train / 5k val / test), ResNet-18, scoring |
 
 Each run writes `runs/<timestamp>/`: `config.json`, `subset_indices.json`, `prompt.json`,
 `calls.json` (every call with its phase and status: `ok`, `refused` by the mode or phase rules, or `failed` on

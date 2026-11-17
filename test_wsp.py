@@ -5,6 +5,7 @@ from functools import partial
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -182,6 +183,19 @@ class DataIsolationTests(unittest.TestCase):
                 with self.subTest(path):
                     text, _ = ep.call('tools', {'code': f'open({str(path)!r}).read()'})
                     self.assertIn('not allowed', text)
+
+    def test_sandbox_has_no_helpers_and_no_harness_code(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('full', tmp)
+            names = ep.call('tools', {'code': "print(sorted(k for k in globals() if not k.startswith('__')))"})[0]
+            self.assertEqual(names.strip(), "['data', 'math', 'start', 'torch']")
+            for code in ('import toolkit', 'import wsp.toolkit', 'import wsp.model', 'from wsp import evaluation',
+                         f"open({str(ROOT / 'wsp' / 'model.py')!r}).read()"):
+                with self.subTest(code):
+                    out = ep.call('tools', {'code': code + "\nprint('IMPORTED')"})[0]
+                    self.assertNotIn('IMPORTED', out)
+        tools_spec = next(t for t in tool_specs('reasoned', ['fc.bias']) if t['name'] == 'tools')
+        self.assertNotIn('toolkit', tools_spec['description'])
 
     def test_sandbox_blocks_network_subprocess_ctypes_and_hides_keys(self):
         with tempfile.TemporaryDirectory() as tmp, NO_GPU, patch.dict('os.environ', {'ANTHROPIC_API_KEY': 's'}):
@@ -683,6 +697,124 @@ class SDKBackendTests(unittest.TestCase):
                       'claude-sdk', '--data-dir', tmp, '--output', str(out), '--dry-run'])
             user = json.loads((out / 'prompt.json').read_text())['user']
             self.assertIn('within about 960,000 output tokens', user)
+
+
+class CodexBackendTests(unittest.TestCase):
+    def post(self, url, body):
+        import urllib.request
+        req = urllib.request.Request(url, json.dumps(body).encode(), {'Content-Type': 'application/json',
+                                                                       'Accept': 'application/json, text/event-stream'})
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read() or b'null')
+
+    def test_mcp_server_routes_calls_over_http(self):
+        from wsp.codex_agent import EpisodeMCP
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            mcp = EpisodeMCP(ep, tool_specs('reasoned', writable_names(ep.start)))
+            url = mcp.start()
+            try:
+                status, init = self.post(url, {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                                               'params': {'protocolVersion': '2025-06-18', 'capabilities': {}}})
+                self.assertEqual((status, init['result']['protocolVersion']), (200, '2025-06-18'))
+                self.assertEqual(self.post(url, {'jsonrpc': '2.0', 'method': 'notifications/initialized'})[0], 202)
+                tools = self.post(url, {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})[1]['result']['tools']
+                self.assertEqual({t['name'] for t in tools},
+                                 {'data', 'labels', 'tools', 'end_tools', 'predict', 'evaluate', 'submit'})
+                self.assertTrue(all('inputSchema' in t for t in tools))
+                call = lambda i, name, args: self.post(url, {'jsonrpc': '2.0', 'id': i, 'method': 'tools/call',
+                                                             'params': {'name': name, 'arguments': args}})[1]['result']
+                self.assertTrue(call(3, 'labels', {'indices': [0]})['isError'])
+                self.assertFalse(call(4, 'end_tools', {})['isError'])
+                self.assertEqual(json.loads(call(5, 'labels', {'indices': [3]})['content'][0]['text']), {'3': 'c3'})
+                self.assertFalse(call(6, 'submit', BIAS)['isError'])
+                late = call(7, 'labels', {'indices': [4]})
+                self.assertTrue(late['isError'])
+                self.assertIn('episode is over', late['content'][0]['text'])
+                self.assertIn('error', self.post(url, {'jsonrpc': '2.0', 'id': 8, 'method': 'resources/list'})[1])
+                import urllib.error
+                with self.assertRaises(urllib.error.HTTPError):
+                    self.post(url.rsplit('/', 1)[0] + '/wrong', {'jsonrpc': '2.0', 'id': 9, 'method': 'tools/list'})
+            finally:
+                mcp.stop()
+            self.assertEqual([e['call'] for e in ep.log], ['labels', 'end_tools', 'labels', 'submit'])
+
+    def test_turn_notes_closing_and_reply_counting(self):
+        from wsp.codex_agent import CodexRun, EpisodeMCP
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            turns, closed = {'reply': 2, 'limit': 5, 'closed': False}, []
+            mcp = EpisodeMCP(ep, tool_specs('reasoned', writable_names(ep.start)), turns,
+                             on_close=lambda: closed.append(1))
+            self.assertTrue(mcp.call('labels', {'indices': [0]})[0].endswith(
+                '\n[harness] turn 3 of 5; 2 turns left after this one.'))
+            turns['reply'] = 4
+            self.assertIn('this is your last turn', mcp.call('end_tools', {})[0])
+            turns['reply'] = 5
+            text, error = mcp.call('labels', {'indices': [1]})
+            self.assertTrue(error and 'turn limit was reached' in text and turns['closed'] and closed)
+            self.assertEqual([e['call'] for e in ep.log], ['labels', 'end_tools'])
+
+            agent = CodexRun(episode('reasoned', Path(tmp) / 'b'), 's', 'p', [], None, tmp, max_turns=50,
+                             max_replies=2)
+            event = lambda total: {'tokenUsage': {'total': {'totalTokens': total}, 'last': {
+                'inputTokens': 100, 'cachedInputTokens': 40, 'outputTokens': 7, 'reasoningOutputTokens': 3}}}
+            self.assertEqual([agent.token_event(event(t), 0) for t in (10, 10, 20, 30)], [False, False, False, True])
+            self.assertEqual(agent.turns['reply'], 3)
+            self.assertTrue(agent.turns['closed'])
+            self.assertEqual(agent.usage[0]['input_tokens_details'], {'cached_tokens': 40})
+            backstop = CodexRun(ep, 's', 'p', [], None, tmp, max_turns=2)
+            self.assertEqual([backstop.token_event(event(t), 0) for t in (1, 2)], [False, True])
+            self.assertFalse(backstop.turns['closed'])
+
+    def test_audit_flags_codex_tools(self):
+        from wsp.codex_agent import content_types
+        item = lambda **kw: {'event': 'item/completed', 'item': kw}
+        clean = [{'event': 'prompt'}, item(type='reasoning'), item(type='agentMessage'),
+                 item(type='mcpToolCall', server='wsp', result={'content': [{'type': 'text', 'text': 'ok'}]})]
+        self.assertEqual(content_types(clean), ['reasoning', 'agentMessage', 'mcpToolCall', 'text'])
+        self.assertEqual(audit('reasoned', [], content_types(clean)), [])
+        leaked = content_types([item(type='commandExecution'), item(type='imageView'),
+                                item(type='mcpToolCall', server='other', result=None)])
+        problems = audit('reasoned', [], leaked)
+        self.assertEqual(problems, ['transcript contains a commandExecution item', 'transcript contains a imageView '
+                                    'item', 'transcript contains a image block',
+                                    'transcript contains a mcp server other item'])
+
+    def test_config_home_and_rate_limits(self):
+        from wsp.codex_agent import config_overrides, five_hour_window, private_home
+        cfg = config_overrides('http://127.0.0.1:1/mcp/x', 1800, 64000)
+        self.assertNotIn('features.code_mode_host=false', cfg)
+        for kv in ('features.shell_tool=false', 'features.unified_exec=false', 'web_search="disabled"',
+                   'mcp_servers.wsp.url="http://127.0.0.1:1/mcp/x"', 'mcp_servers.wsp.tool_timeout_sec=1800',
+                   'notify=[]', 'project_doc_max_bytes=0', 'model_max_output_tokens=64000'):
+            self.assertIn(kv, cfg)
+        self.assertNotIn('model_max_output_tokens', ' '.join(config_overrides('u', 1)))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'src').mkdir()
+            (Path(tmp) / 'src' / 'auth.json').write_text('{}')
+            (Path(tmp) / 'src' / 'config.toml').write_text('model = "x"')
+            home = private_home(Path(tmp) / 'home', Path(tmp) / 'src')
+            relative_home = private_home(Path(os.path.relpath(tmp)) / 'relative_home', Path(tmp) / 'src')
+            self.assertTrue(relative_home.is_absolute())
+            self.assertEqual(sorted(p.name for p in home.iterdir()), ['auth.json'])
+            self.assertTrue((home / 'auth.json').is_symlink())
+        snap = {'primary': {'usedPercent': 45, 'windowDurationMins': 300, 'resetsAt': 1000},
+                'secondary': {'usedPercent': 10, 'windowDurationMins': 10080}}
+        self.assertEqual(five_hour_window(snap), (0.45, 1000))
+        self.assertEqual(five_hour_window({'primary': None}), (None, None))
+
+    def test_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '1.0', '--provider',
+                      'codex-sdk', '--max-turns', '40', '--data-dir', tmp, '--output', str(out), '--dry-run'])
+            user = json.loads((out / 'prompt.json').read_text())['user']
+            self.assertIn('You have 40 turns', user)
+            self.assertIn('within about 960,000 output tokens', user)
+            self.assertEqual(json.loads((out / 'config.json').read_text())['sdk_max_turns'], 120)
 
 
 class WarmStartTests(unittest.TestCase):

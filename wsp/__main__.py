@@ -31,6 +31,9 @@ from wsp.prompt import system_prompt, tool_specs, user_prompt
 from wsp.tasks import TASKS, apply_diff, load_start, start_weights, writable_names
 
 
+SDK_PROVIDERS = ('claude-sdk', 'codex-sdk')
+
+
 def save(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False, default=str) + '\n')
 
@@ -85,16 +88,20 @@ def parse_args(argv=None):
     p.add_argument('--mode', choices=MODES, required=True)
     p.add_argument('--data-fraction', type=float, default=0.0, help='Fraction (0, 1] of train (reasoned/full)')
     p.add_argument('--data-seed', type=int, default=0)
-    p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'claude-sdk'], default='anthropic')
+    p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'claude-sdk', 'codex-sdk'],
+                   default='anthropic')
     p.add_argument('--model', help='default: claude-sonnet-5-5 (anthropic), gpt-6.1-sol (openai), '
-                                   'anthropic/claude-opus-5.5 (openrouter), claude-opus-5-5 (claude-sdk)')
+                                   "anthropic/claude-opus-5.5 (openrouter), claude-opus-5-5 (claude-sdk), Codex's "
+                                   'default model (codex-sdk)')
     p.add_argument('--token-budget', type=int, default=960000,
-                   help='claude-sdk: soft total output-token budget stated in the prompt (not enforced)')
+                   help='claude-sdk/codex-sdk: soft total output-token budget stated in the prompt (not enforced)')
     p.add_argument('--sdk-max-turns', type=int,
-                   help="claude-sdk: backstop on Claude Code's own agent-loop turns (default 3 x --max-turns, else 50)")
+                   help="claude-sdk: backstop on Claude Code's own agent-loop turns; codex-sdk: on model responses "
+                        '(default 3 x --max-turns, else 50)')
     p.add_argument('--usage-limit', type=float,
-                   help='claude-sdk: hold the next call while the five-hour plan window is at least this fraction used, '
-                        'until it resets (e.g. 0.4)')
+                   help='claude-sdk/codex-sdk: hold the next call while the five-hour plan window is at least this '
+                        'fraction used, until it resets (e.g. 0.4)')
+    p.add_argument('--codex-bin', help='codex-sdk: Codex executable (default: the one bundled with openai-codex)')
     p.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'])
     p.add_argument('--max-tokens', type=int, default=64000, help='Per model turn')
     p.add_argument('--max-turns', type=int,
@@ -117,7 +124,7 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     if (a.mode == 'blind') != (a.data_fraction == 0) or not 0 <= a.data_fraction <= 1:
         p.error('blind takes --data-fraction 0; reasoned/full need --data-fraction in (0, 1]')
-    if a.max_turns is None and (a.provider != 'claude-sdk' or a.script):
+    if a.max_turns is None and (a.provider not in SDK_PROVIDERS or a.script):
         a.max_turns = 10
     if a.sdk_max_turns is None:
         a.sdk_max_turns = 3 * a.max_turns if a.max_turns else 50
@@ -156,7 +163,7 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=False)
     save(out / 'config.json', vars(a))
     save(out / 'subset_indices.json', {'indices': subset.tolist()})
-    sdk = a.provider == 'claude-sdk' and not a.script
+    sdk = a.provider in SDK_PROVIDERS and not a.script
     system = system_prompt(a.mode)
     prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
                          a.max_tokens, a.token_budget if sdk else None, warm=a.start_weights is not None,
@@ -170,7 +177,12 @@ def main(argv=None):
     log = []
     episode = Episode(a.mode, start, images, labels, classes, out / 'workspace',
                       partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log)
-    if sdk:
+    if sdk and a.provider == 'codex-sdk':
+        from wsp.codex_agent import CodexRun
+        agent = CodexRun(episode, system, prompt, tools, a.model, out / 'agent_cwd', a.effort, a.sdk_max_turns,
+                         a.max_tokens, max_replies=a.max_turns, usage_limit=a.usage_limit,
+                         tool_timeout=a.tool_timeout, codex_bin=a.codex_bin)
+    elif sdk:
         from wsp.sdk_agent import SDKRun
         agent = SDKRun(episode, system, prompt, tools, a.model or 'claude-opus-5-5', out / 'agent_cwd', a.effort,
                        a.sdk_max_turns, a.max_tokens, max_replies=a.max_turns, usage_limit=a.usage_limit)
@@ -221,8 +233,11 @@ def main(argv=None):
         save(out / 'usage.json', agent.usage)
         if sdk and agent.result:
             save(out / 'sdk_result.json', agent.result)
-            print(f'sdk result: {agent.result.get("subtype")}, {agent.result.get("num_turns")} turns, '
-                  f'${agent.result.get("total_cost_usd")}', flush=True)
+            if a.provider == 'codex-sdk':
+                print(f'codex result: {agent.result.get("status")}, {agent.result.get("replies")} replies', flush=True)
+            else:
+                print(f'sdk result: {agent.result.get("subtype")}, {agent.result.get("num_turns")} turns, '
+                      f'${agent.result.get("total_cost_usd")}', flush=True)
         if sdk and agent.turns['closed']:
             print(f'turn limit reached: {a.max_turns} replies without an accepted submit()', flush=True)
         if sdk and agent.window['holds']:

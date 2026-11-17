@@ -5,7 +5,6 @@ from wsp.episode import ALLOWED, MAX_IMAGES_PER_CALL, MAX_OUTPUT_CHARS, PREDICT_
 from wsp.evaluation import weight_stats
 from wsp.model import ARCHITECTURE
 from wsp.tasks import DATASET_DESCRIPTIONS
-from wsp.toolkit import DOC as TOOLKIT_DOC
 
 SYSTEM = """You are doing weight-space programming: you write the weights of a ResNet-18 directly,
 as literal numbers, instead of training it. Your final answer is one submit() call with a diff:
@@ -81,12 +80,12 @@ REASONED_CALL_DOCS = {
 def tools_doc(timeout, device):
     return ('Run Python in a sandbox. Each call is a fresh process that runs for at most '
             f'{timeout:g} s on {device}; files you write in the working directory persist across calls (add "." to '
-            'sys.path to import your own modules from there). Preloaded: torch, math, toolkit; `start`, the start '
+            'sys.path to import your own modules from there). Preloaded: torch, math; `start`, the start '
             'state_dict {name: tensor}; `data`: {"images": uint8 tensor [N, 3, 32, 32], "classes": list of class names} '
             'where data["images"][i] is image i of every call (in full mode also "labels"; in blind mode `data` is '
             'None). No network, no subprocesses, no threads, no files outside the working directory, no gradients. '
             f'Returns only the last {MAX_OUTPUT_CHARS:,} characters of stdout+stderr, so print long outputs in several '
-            'calls.\n' + TOOLKIT_DOC)
+            'calls.')
 
 
 def tool_specs(mode, names, timeout=300, device='cpu'):
