@@ -1,1 +1,0 @@
-print("hello", len(VAL_PROMPTED), type(VAL_PROMPTED))

@@ -5,6 +5,46 @@ the initialized network: the tensors, or blocks of tensors, it wants to change, 
 or a constant fill. Everything it leaves out keeps its start values. The submitted network is scored once on held-out val (and test), which
 the agent never sees. Everything the agent sees is text: no image blocks, no vision encoder (except with `--visual`, below).
 
+![Blind, reasoning, and full-access weight programming](share/figures/hero.png)
+
+## Quick start
+
+Use Python 3.11 or newer, from the repository root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+Fill in the key for your chosen API provider in `.env`, or export it in your shell.
+The CLI reads `.env` automatically; existing environment variables take precedence.
+The SDK providers (`claude-sdk` and `codex-sdk`) use their respective local CLI
+authentication instead.
+
+```bash
+python -m wsp --task scratch-cifar10 --mode blind
+python -m wsp --task scratch-cifar10 --mode reasoned --data-fraction 0.1
+python -m wsp --task scratch-cifar10 --mode full --data-fraction 0.1 --evaluate-test
+```
+
+CIFAR data downloads and caches automatically on first use. The
+`scratch-cifar10` task starts from a random PyTorch initialization and does not
+need a pretrained checkpoint. Only `cifar10-to-cifar100` needs the source model
+created by `python train_base.py`.
+
+Run the offline tests without API calls or dataset downloads:
+
+```bash
+python -m unittest test_wsp.py
+```
+
+Datasets (`data/`), checkpoints (`checkpoints/`), and run artifacts (`runs/`) are
+generated locally and excluded from Git. The repository contains the experiment
+harness and the [selected figures](share/README.md); historical run artifacts
+and unrelated earlier projects are not part of the public source tree.
+
 ## Calls
 
 | Call | Returns to the agent | Runs in |
@@ -87,7 +127,6 @@ What's checked mechanically, by the harness and by `audit.json` after each run:
 ## Run
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 python train_base.py            # only for cifar10-to-cifar100: trains the CIFAR-10 source model
 
 export ANTHROPIC_API_KEY=...    # Claude Sonnet 5.5 by default (--model, --effort)
@@ -136,10 +175,16 @@ disabled. The isolation uses Python audit hooks: it's process isolation, **not a
 | `wsp/__main__.py` | CLI: subset, prompt, episode, audit, val/test scoring |
 | `wsp/episode.py` | the calls, the mode rules, the `reasoned` phases, the audit |
 | `wsp/agent.py` | Anthropic agent (streaming, adaptive thinking, prompt caching, server-side refusal fallback), scripted agent, episode loop |
+| `wsp/sdk_agent.py`, `codex_agent.py` | Claude Agent SDK and Codex SDK integrations |
+| `wsp/bridge.py` | interactive shell bridge to an episode |
 | `wsp/prompt.py` | system and user prompt, per-mode rules, tool definitions |
 | `wsp/sandbox.py` | runs one `tools()` call |
 | `wsp/tasks.py` | the two tasks, start weights, diff validation |
 | `wsp/data.py`, `model.py`, `evaluation.py` | splits (45k train / 5k val / test), ResNet-18, scoring |
+| `train_base.py` | train the source checkpoint for the CIFAR-100 transfer task |
+| `sweep.py` | schedule experiment grids and collect results |
+| `test_wsp.py` | offline harness and provider integration tests |
+| `share/figures/` | selected figures used in the accompanying write-up |
 
 Each run writes `runs/<timestamp>/`: `config.json`, `subset_indices.json`, `prompt.json`,
 `calls.json` (every call with its phase and status: `ok`, `refused` by the mode or phase rules, or `failed` on

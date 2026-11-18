@@ -1,1 +1,0 @@
-I'm evaluating a 4.0x W3 scale to further accelerate the controller.

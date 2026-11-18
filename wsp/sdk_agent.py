@@ -128,13 +128,17 @@ def read_fence(cwd):
 
 class SDKRun:
     def __init__(self, episode, system, prompt, specs, model, cwd, effort=None, max_turns=50, max_tokens=None,
-                 on_reply=None, max_replies=None, usage_limit=None):
+                 on_reply=None, max_replies=None, usage_limit=None, resume=None):
         self.episode, self.system, self.prompt, self.specs = episode, system, prompt, specs
         self.model, self.cwd, self.effort, self.max_turns, self.max_tokens = model, Path(cwd), effort, max_turns, max_tokens
         self.on_reply = on_reply
         self.turns = {'reply': 0, 'limit': max_replies, 'closed': False}
         self.window = {'limit': usage_limit, 'used': None, 'resets': None, 'holds': []}
         self.messages, self.usage, self.result = [], [], None
+        self.resume = resume  # {'session', 'note', 'messages', 'usage'}: continue that Claude Code session
+        if resume:
+            self.messages, self.usage = list(resume['messages']), list(resume['usage'])
+            self.turns['reply'] = len(self.usage)
 
     def rate_event(self, event):
         used, resets = five_hour_window(event)
@@ -166,14 +170,15 @@ class SDKRun:
             model=self.model,
             effort=self.effort, thinking={'type': 'adaptive', 'display': 'summarized'}, max_turns=self.max_turns,
             cwd=str(self.cwd), env=env, can_use_tool=deny_others,
-            hooks={'PreToolUse': [HookMatcher(matcher='Read', hooks=[read_fence(self.cwd)])]})
+            hooks={'PreToolUse': [HookMatcher(matcher='Read', hooks=[read_fence(self.cwd)])]},
+            resume=self.resume['session'] if self.resume else None)
 
     async def run(self):
         from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, RateLimitEvent, ResultMessage
         self.cwd.mkdir(parents=True, exist_ok=True)
         reply, started, interrupted = None, time.monotonic(), False
         async with ClaudeSDKClient(options=self.options()) as client:
-            await client.query(self.prompt)
+            await client.query(self.resume['note'] if self.resume else self.prompt)
             async for message in client.receive_response():
                 self.messages.append(to_json(message))
                 if isinstance(message, AssistantMessage):

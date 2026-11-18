@@ -1,1 +1,0 @@
-print(1+1, len(VAL_PROMPTED))

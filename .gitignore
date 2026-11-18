@@ -1,8 +1,31 @@
+# Credentials and local provider sessions
 .env
 .env.*
+!.env.example
+/.aws/
+/.claude/
+/.codex/
+
+# Environments and Python caches
 .venv/
+venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Datasets, checkpoints and experiment outputs (recreated locally)
 /runs/
 /data/
 /checkpoints/
+/output/
 *.log
+
+# Local backups, editor state and OS metadata
+/.local/
+.idea/
+.vscode/
+.DS_Store

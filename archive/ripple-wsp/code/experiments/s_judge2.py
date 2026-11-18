@@ -1,7 +1,0 @@
-C2J = json.load(open('/work/caps_v2.json')); EV3 = json.load(open('/work/eval3.json'))
-qs = judge_quality(te, C2J['test_edited'])
-chk = lambda a: bool(eval(P['caps']['check'], {"reply": a}))
-both = sum(1 for r, x in zip(C2J['test_edited'], qs) if x >= 0.5 and chk(split_reply(r)[1]))
-qp = judge_quality(te, EV3['caps/prompted']); bp = sum(1 for r, x in zip(EV3['caps/prompted'], qp) if x >= 0.5 and chk(split_reply(r)[1]))
-print(f"caps v2 TEST | uppercase {score('caps', C2J['test_edited'])} | content-correct {sum(x >= 0.5 for x in qs)}/32 | uppercase AND correct {both}/32 | prompted uppercase AND correct {bp}/32")
-json.dump({"v2": C2J['test_edited'], "judge": qs}, open('/work/caps_v2_judged.json', 'w')); print("JUDGE2 DONE")

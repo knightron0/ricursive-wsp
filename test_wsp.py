@@ -1,6 +1,6 @@
 """Offline tests: no API key, no network, no CIFAR download (tiny random splits stand in)."""
 import asyncio
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from functools import partial
 import importlib.util
 import io
@@ -1014,6 +1014,39 @@ print('OWN', os.listdir('own'), os.path.exists('own/g.txt'))
                       '--output', str(Path(tmp) / 'run'), '--dry-run'])
             for k in ('CLAUDE_EFFORT', 'CLAUDECODE', 'CLAUDE_CODE_MESSAGING_TOKEN'):
                 self.assertNotIn(k, os.environ)
+
+
+class ResumeTests(unittest.TestCase):
+    def test_resume_takes_the_runs_config_and_session(self):
+        from wsp.__main__ import RESUME_NOTE, parse_args, session_id
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            fake_data_dir(tmp)
+            out = Path(tmp) / 'run'
+            with redirect_stdout(io.StringIO()):
+                main(['--task', 'scratch-cifar10', '--mode', 'reasoned', '--data-fraction', '0.5', '--provider',
+                      'claude-sdk', '--effort', 'high', '--data-dir', tmp, '--output', str(out), '--dry-run'])
+            a = parse_args(['--resume', str(out), '--usage-limit', '0.9'])
+            self.assertEqual((a.task, a.mode, a.data_fraction, a.effort, a.usage_limit, a.output, a.dry_run),
+                             ('scratch-cifar10', 'reasoned', 0.5, 'high', 0.9, out, False))
+            self.assertEqual(parse_args(['--resume', str(out)]).usage_limit, None)
+            self.assertEqual(parse_args(['--resume', str(out)]).sdk_max_turns, 50)
+            self.assertEqual(parse_args(['--resume', str(out), '--sdk-max-turns', '200']).sdk_max_turns, 200)
+            with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                parse_args(['--mode', 'blind'])
+        self.assertEqual(session_id([{'type': 'SystemMessage', 'subtype': 'init', 'data': {'session_id': 's1'}}]), 's1')
+        self.assertIn('[harness]', RESUME_NOTE)
+
+    @unittest.skipUnless(importlib.util.find_spec('claude_agent_sdk'), 'claude-agent-sdk not installed')
+    def test_sdk_run_resumes_the_session_with_its_history(self):
+        from wsp.sdk_agent import SDKRun
+        with tempfile.TemporaryDirectory() as tmp, NO_GPU:
+            ep = episode('reasoned', tmp)
+            agent = SDKRun(ep, 's', 'p', [], 'm', tmp, max_replies=10,
+                           resume={'session': 'abc', 'note': 'go on', 'messages': [{'type': 'X'}],
+                                   'usage': [{'message_id': 1}, {'message_id': 2}]})
+            self.assertEqual(agent.options().resume, 'abc')
+            self.assertEqual((agent.messages, agent.turns['reply']), ([{'type': 'X'}], 2))
+            self.assertIsNone(SDKRun(ep, 's', 'p', [], 'm', tmp).options().resume)
 
 
 class WarmStartTests(unittest.TestCase):

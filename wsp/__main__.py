@@ -84,8 +84,8 @@ def turn_line(turn, entries, mode, locked, seconds, usage, counted=True):
 def parse_args(argv=None):
     p = argparse.ArgumentParser(prog='python -m wsp', description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--task', choices=sorted(TASKS), required=True)
-    p.add_argument('--mode', choices=MODES, required=True)
+    p.add_argument('--task', choices=sorted(TASKS))
+    p.add_argument('--mode', choices=MODES)
     p.add_argument('--data-fraction', type=float, default=0.0, help='Fraction (0, 1] of train (reasoned/full)')
     p.add_argument('--data-seed', type=int, default=0)
     p.add_argument('--provider', choices=['anthropic', 'openai', 'openrouter', 'local', 'claude-sdk', 'codex-sdk'],
@@ -131,7 +131,15 @@ def parse_args(argv=None):
                         'grid), so the agent can base its weights on what it sees. anthropic, openai, claude-sdk')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--evaluate-test', action='store_true')
+    p.add_argument('--resume', type=Path, metavar='RUN_DIR',
+                   help='claude-sdk: continue a run that stopped before submit() (e.g. at a plan usage limit) in the '
+                        'same Claude Code session, with its calls, phase and workspace files as they were. Every '
+                        'other setting comes from RUN_DIR/config.json, except --usage-limit and --sdk-max-turns')
     a = p.parse_args(argv)
+    if a.resume:
+        return resume_args(p, a)
+    if a.task is None or a.mode is None:
+        p.error('--task and --mode are required (unless --resume)')
     if (a.mode == 'blind') != (a.data_fraction == 0) or not 0 <= a.data_fraction <= 1:
         p.error('blind takes --data-fraction 0; reasoned/full need --data-fraction in (0, 1]')
     if a.provider == 'local' and not a.base_url:
@@ -147,6 +155,31 @@ def parse_args(argv=None):
     if a.sdk_max_turns is None:
         a.sdk_max_turns = 3 * a.max_turns if a.max_turns else 50
     return a
+
+
+PATH_ARGS = ('script', 'source', 'start_weights', 'data_dir', 'output')
+RESUME_NOTE = ('[harness] The episode was paused because the plan usage limit was reached, and has now resumed. Every '
+               'earlier call, file in the working directory and the phase are as they were. Continue the episode.')
+
+
+def resume_args(p, a):
+    cfg_path = a.resume / 'config.json'
+    if not cfg_path.exists():
+        p.error(f'{cfg_path} not found')
+    overrides = {k: getattr(a, k) for k in ('usage_limit', 'sdk_max_turns') if getattr(a, k) is not None}
+    for k, v in json.loads(cfg_path.read_text()).items():
+        setattr(a, k, Path(v) if k in PATH_ARGS and v is not None else v)
+    a.resume, a.output, a.dry_run = Path(cfg_path.parent), Path(cfg_path.parent), False
+    for k, v in overrides.items():
+        setattr(a, k, v)
+    if a.provider != 'claude-sdk' or a.script:
+        p.error('--resume supports --provider claude-sdk runs only')
+    return a
+
+
+def session_id(transcript):
+    return next((m['data'].get('session_id') for m in transcript
+                 if m.get('type') == 'SystemMessage' and m.get('subtype') == 'init'), None)
 
 
 def load_dotenv(path=Path(__file__).resolve().parent.parent / '.env'):
@@ -188,25 +221,49 @@ def main(argv=None):
                    if a.start_weights else None)
 
     out = a.output
-    out.mkdir(parents=True, exist_ok=False)
-    save(out / 'config.json', vars(a))
-    save(out / 'subset_indices.json', {'indices': subset.tolist()})
     sdk = a.provider in SDK_PROVIDERS and not a.script
     sdk_rules = a.turn_rules == 'sdk' and not a.script
-    system = system_prompt(a.mode, a.visual)
-    prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
-                         a.max_tokens, a.token_budget if sdk or sdk_rules else None, warm=a.start_weights is not None,
-                         start_score=start_score, turn_limit=a.max_turns if sdk or sdk_rules else None,
-                         visual=a.visual)
-    tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device(), a.visual)
-    save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
-    print(f'Prompt: {out / "prompt.json"}')
+    prior = None
+    if a.resume:
+        # The run's own prompt and tools, exactly as the agent saw them, and its call log, transcript and usage.
+        saved = json.loads((out / 'prompt.json').read_text())
+        system, prompt, tools = saved['system'], saved['user'], saved['tools']
+        if json.loads((out / 'subset_indices.json').read_text())['indices'] != subset.tolist():
+            sys.exit(f'{out}: the data subset no longer matches subset_indices.json')
+        prior = {name: json.loads((out / f'{name}.json').read_text()) if (out / f'{name}.json').exists() else []
+                 for name in ('calls', 'transcript', 'usage')}
+        if any(e['call'] == 'submit' and e['executed'] for e in prior['calls']):
+            sys.exit(f'{out}: submit() was already accepted; nothing to resume')
+        prior['session'] = session_id(prior['transcript'])
+        if not prior['session']:
+            sys.exit(f'{out}: no Claude Code session id in transcript.json')
+        resumes = json.loads((out / 'resumes.json').read_text()) if (out / 'resumes.json').exists() else []
+        resumes.append({'at': datetime.now(timezone.utc).isoformat(), 'session': prior['session'],
+                        'calls_before': len(prior['calls']), 'replies_before': len(prior['usage']),
+                        'usage_limit': a.usage_limit, 'sdk_max_turns': a.sdk_max_turns, 'note': RESUME_NOTE,
+                        'previous_sdk_result': (json.loads((out / 'sdk_result.json').read_text())
+                                                if (out / 'sdk_result.json').exists() else None)})
+        save(out / 'resumes.json', resumes)
+        print(f'Resuming {out}: session {prior["session"]}, {len(prior["calls"])} calls, '
+              f'{len(prior["usage"])} replies so far', flush=True)
+    else:
+        out.mkdir(parents=True, exist_ok=False)
+        save(out / 'config.json', vars(a))
+        save(out / 'subset_indices.json', {'indices': subset.tolist()})
+        system = system_prompt(a.mode, a.visual)
+        prompt = user_prompt(task, a.mode, start, len(subset), a.max_numbers, a.max_turns, a.format_retries,
+                             a.max_tokens, a.token_budget if sdk or sdk_rules else None, warm=a.start_weights is not None,
+                             start_score=start_score, turn_limit=a.max_turns if sdk or sdk_rules else None, visual=a.visual)
+        tools = tool_specs(a.mode, writable_names(start), a.tool_timeout, default_device(), a.visual)
+        save(out / 'prompt.json', {'system': system, 'user': prompt, 'tools': tools})
+        print(f'Prompt: {out / "prompt.json"}')
     if a.dry_run:
         return
 
-    log = []
+    log = list(prior['calls']) if prior else []
     episode = Episode(a.mode, start, images, labels, classes, out / 'workspace',
                       partial(apply_diff, max_numbers=a.max_numbers), a.device, a.tool_timeout, log, a.visual)
+    episode.locked = any(e['call'] == 'end_tools' and e['executed'] for e in log)
     if sdk and a.provider == 'codex-sdk':
         from wsp.codex_agent import CodexRun
         agent = CodexRun(episode, system, prompt, tools, a.model, out / 'agent_cwd', a.effort, a.sdk_max_turns,
@@ -215,7 +272,9 @@ def main(argv=None):
     elif sdk:
         from wsp.sdk_agent import SDKRun
         agent = SDKRun(episode, system, prompt, tools, a.model or 'claude-opus-5-5', out / 'agent_cwd', a.effort,
-                       a.sdk_max_turns, a.max_tokens, max_replies=a.max_turns, usage_limit=a.usage_limit)
+                       a.sdk_max_turns, a.max_tokens, max_replies=a.max_turns, usage_limit=a.usage_limit,
+                       resume=prior and {'session': prior['session'], 'note': RESUME_NOTE,
+                                         'messages': prior['transcript'], 'usage': prior['usage']})
     elif a.script:
         agent = ScriptedAgent.from_file(a.script)
     else:
@@ -227,7 +286,8 @@ def main(argv=None):
             **({'base_url': a.base_url} if a.provider == 'local' else {}),
             **({'provider': a.openrouter_provider} if a.provider == 'openrouter' and a.openrouter_provider else {}))
 
-    progress = {'logged': 0, 'time': time.monotonic(), 'pending': None, 'length': 0, 'replies': 0}
+    progress = {'logged': len(log), 'time': time.monotonic(), 'pending': None, 'length': 0,
+                'replies': len(prior['usage']) if prior else 0}
 
     def save_transcript():
         messages = agent.transcript()
